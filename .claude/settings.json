@@ -40,7 +40,8 @@
       "mcp__claude_ai_Linear__list_projects",
       "mcp__claude_ai_Linear__list_milestones",
       "mcp__claude_ai_Linear__list_issue_statuses",
-      "mcp__claude_ai_Linear__list_issue_labels"
+      "mcp__claude_ai_Linear__list_issue_labels",
+      "mcp__playwright__*"
     ],
     "deny": [
       "Bash(gh pr merge:*)",

@@ -27,6 +27,11 @@ Linear↔GitHub integration auto-closes issues whose PR body contains
 The skill file in `.claude/skills/work/` carries the detailed step-by-step.
 Read `WORKFLOW.md` for the formal loop contract.
 
+Frontend tickets get an extra UI-verification step driven by the **Playwright
+MCP** (`mcp__playwright__*` — registered in `.mcp.json`, runs via
+`npx @playwright/mcp@latest`). The `/work` skill calls into it automatically
+on changes that touch user-visible UI.
+
 ## Hard rules (the only ones that belong here)
 
 - **Never merge your own PR.** Human approval is the only path to `main`.

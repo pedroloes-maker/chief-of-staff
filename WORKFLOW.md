@@ -40,6 +40,13 @@ follows when working a Linear ticket end-to-end.
 5. **Test.** Run whatever test suite is appropriate for the change. New code
    gets at least one test where it makes sense. Stop if tests fail and fix
    before moving on.
+5b. **UI-verify (frontend tickets only).** If the change touches user-visible
+    UI, boot the app and drive the golden path through the **Playwright MCP**
+    (`mcp__playwright__*`): navigate to the affected screen, perform the user
+    action, observe the result, take a screenshot. Stop and fix if behaviour
+    diverges from the acceptance criteria. Skip this step for
+    backend/infra/docs-only tickets — note in the Linear comment which path
+    you took ("UI-verified" or "no UI surface").
 6. **Commit** with a conventional message ending in the configured
    `commit_co_author`. Prefer one or two atomic commits over a single megablob.
 7. **Push** the branch to `origin`.

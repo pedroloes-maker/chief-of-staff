@@ -42,6 +42,16 @@ The **source of truth is Linear**; the **artifact is a GitHub PR**; the
 5. **Test.** Run the relevant test suite for the change. New code gets at least
    one test where it makes sense. Stop and fix if anything is red.
 
+5b. **UI-verify (frontend tickets only).** If the diff changes user-visible UI,
+    boot the app and drive the golden path of the affected feature through the
+    **Playwright MCP** (`mcp__playwright__*` tools — `browser_navigate`,
+    `browser_click`, `browser_type`, `browser_snapshot`,
+    `browser_take_screenshot`, etc.). Observe the result against the
+    acceptance criteria. Capture a screenshot for the Linear comment. If the
+    behaviour diverges, fix before moving on. Skip for backend/infra/docs-only
+    tickets — but say so explicitly in the Linear comment ("UI-verified" vs
+    "no UI surface").
+
 6. **Commit.** One or two atomic commits, conventional message style. Trailer:
    ```
    Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
@@ -79,6 +89,8 @@ The **source of truth is Linear**; the **artifact is a GitHub PR**; the
     - Branch name and head commit hash.
     - A short summary of what changed.
     - The local test result (e.g. "12/12 passing").
+    - The UI-verify result from step 5b (one of "UI-verified — <screen/flow>"
+      with screenshot attached, or "no UI surface — skipped").
     - The review verdict line from step 9.
 
 11. **STOP.** Leave the issue in `In Progress`. Do not merge the PR. Do not
@@ -100,6 +112,9 @@ The **source of truth is Linear**; the **artifact is a GitHub PR**; the
 
 - Linear MCP: `mcp__claude_ai_Linear__get_issue`, `list_comments`,
   `save_comment`, `save_issue`.
+- Playwright MCP (`mcp__playwright__*`) for UI verification on frontend
+  tickets. Registered in `.mcp.json` at repo root; runs via
+  `npx @playwright/mcp@latest` on first call.
 - Bash for `git`, `gh`. (`.claude/settings.json` pre-allows the safe
   invocations.)
 - Read / Write / Edit for code changes.
