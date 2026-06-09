@@ -3,9 +3,10 @@ tracker:
   kind: linear
   team: SmartTalks
   project: Chief-of-Staff
-  active_states: [Todo, In Progress]
-  terminal_states: [Done, Canceled, Duplicate]
-  handoff_state: In Progress   # Linear has no "In Review" state today; PR-open issues stay here until human merges
+  pickup_states: [Backlog, Todo, In Progress]   # /work can claim a ticket from any of these (In Progress = resuming own work)
+  active_state: In Progress                     # set when implementation begins
+  handoff_state: In Review                      # set when the PR is opened; means "human's court"
+  terminal_states: [Done, Canceled, Duplicate]  # only the human merge moves the ticket to Done (via GitHub↔Linear integration)
 agent:
   name: claude-code
   model: claude-opus-4-7
@@ -27,10 +28,22 @@ follows when working a Linear ticket end-to-end.
 
 **Source of truth:** Linear. **Artifact:** GitHub PR. **Approval:** human merge.
 
+## State model
+
+```
+Backlog / Todo  ──/work──▶  In Progress  ──PR open──▶  In Review  ──human merge──▶  Done
+```
+
+- `/work` may pick up a ticket from `Backlog`, `Todo`, or `In Progress` (the
+  last for resuming your own in-flight work).
+- `In Review` is a hard stop for the agent — the ticket is in the human's
+  court. The GitHub↔Linear integration moves it to `Done` on merge.
+
 ## Loop (per ticket)
 
-1. **Pick up.** Read the Linear issue via the Linear MCP. Verify it is in `Todo`
-   or `In Progress`. If it's blocked or already has an open PR, stop.
+1. **Pick up.** Read the Linear issue via the Linear MCP. Verify it is in
+   `Backlog`, `Todo`, or `In Progress`. If it is in `In Review`, `Done`,
+   `Canceled`, or `Duplicate`, or if it already has an open PR, stop.
 2. **Move to In Progress** (if not already).
 3. **Branch from `main`** using the `branch_pattern` above. Stash
    any unrelated uncommitted work first — branches must be clean.
@@ -53,11 +66,13 @@ follows when working a Linear ticket end-to-end.
 8. **Open the PR** via `gh pr create` with the `pr_title_pattern` title and a
    body that links the Linear issue. Body must include `Closes SMA-{id}`
    so Linear's GitHub integration auto-closes the issue on merge.
-9. **Comment on Linear.** Post a comment on the issue with the PR URL and a
-   one-line summary of what changed. Leave the issue in `In Progress` — it's
-   now in the human's court.
-10. **Stop.** Do not auto-merge. Do not transition to `Done`. The human reviews,
-    merges, and Linear closes the issue on merge.
+9. **Transition to In Review.** Move the Linear issue to `In Review` —
+   signalling the PR is open and the ticket is now in the human's court.
+10. **Comment on Linear.** Post a comment on the issue with the PR URL and a
+    one-line summary of what changed. The issue stays in `In Review` from
+    here on.
+11. **Stop.** Do not auto-merge. Do not transition to `Done`. The human
+    reviews, merges, and the GitHub↔Linear integration closes the issue.
 
 ## Hard rules
 

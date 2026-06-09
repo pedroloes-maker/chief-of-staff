@@ -22,8 +22,11 @@ The **source of truth is Linear**; the **artifact is a GitHub PR**; the
    (`list_comments`). The **"Acceptance"** section in the description defines
    "done". If acceptance is unclear, stop and ask before writing code.
 
-2. **State transition.** If the issue is not already `In Progress`, move it
-   there via `save_issue` (`state: "In Progress"`).
+2. **State transition.** Verify the issue is in `Backlog`, `Todo`, or
+   `In Progress`. If it is in `In Review`, `Done`, `Canceled`, or
+   `Duplicate`, stop and ask the user — do not silently re-open a
+   handed-off ticket. Otherwise, if it is not already `In Progress`, move
+   it there via `save_issue` (`state: "In Progress"`).
 
 3. **Clean branch.** Confirm the working tree is clean — `git status --short`
    must be empty. If not, stash unrelated work with a descriptive name
@@ -66,6 +69,12 @@ The **source of truth is Linear**; the **artifact is a GitHub PR**; the
    - Body should have a one-paragraph **Summary** and a **Test plan** with
      checkboxes for the reviewer.
 
+8b. **Transition to In Review.** Move the Linear issue to `In Review` via
+    `save_issue` (`id: "{{args}}"`, `state: "In Review"`). This signals the
+    PR is open and the ticket is in the human's court — the GitHub↔Linear
+    integration will move it to `Done` on merge. Do this BEFORE the self-
+    review so the state is correct even if the review iteration is long.
+
 9. **Code review pass.** Before notifying anyone, do one careful self-review
    of the diff you just pushed:
 
@@ -93,9 +102,9 @@ The **source of truth is Linear**; the **artifact is a GitHub PR**; the
       with screenshot attached, or "no UI surface — skipped").
     - The review verdict line from step 9.
 
-11. **STOP.** Leave the issue in `In Progress`. Do not merge the PR. Do not
-    transition the issue to `Done`. The human reviewer is now in control; the
-    GitHub-Linear integration will move the issue to `Done` on merge.
+11. **STOP.** Leave the issue in `In Review`. Do not merge the PR. Do not
+    transition the issue to `Done`. The human reviewer is now in control;
+    the GitHub↔Linear integration will move the issue to `Done` on merge.
 
 ## Hard rules (do not break)
 
