@@ -8,9 +8,11 @@ import {
   Plug,
   Database,
   Settings,
-  ChevronDown,
+  Briefcase,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useWorkspaces } from "../../lib/api";
 
 const navItems = [
   { label: "Início", icon: Home, href: "/" },
@@ -32,38 +34,76 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
         <nav className="flex-1 overflow-y-auto py-3">
           {navItems.map((item) => (
-            <a
+            <Link
               key={item.href}
-              href={item.href}
+              to={item.href}
               className="flex items-center gap-3 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-100 hover:text-neutral-950"
             >
               <item.icon className="h-4 w-4" strokeWidth={1.5} />
               {item.label}
-            </a>
+            </Link>
           ))}
         </nav>
       </aside>
 
       <div className="flex flex-1 flex-col">
-        <header className="flex h-14 items-center justify-between border-b border-neutral-900 px-6">
-          <div className="text-sm text-neutral-600">
-            Workspace switcher entra em SMA-7
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              disabled
-              className="flex cursor-not-allowed items-center gap-2 border border-neutral-300 px-3 py-1.5 text-sm text-neutral-400"
-            >
-              <span>Selecionar workspace</span>
-              <ChevronDown className="h-4 w-4" strokeWidth={1.5} />
-            </button>
-            <UserButton />
-          </div>
-        </header>
-
+        <TopBar />
         <main className="flex-1 overflow-y-auto bg-neutral-50">{children}</main>
       </div>
     </div>
+  );
+}
+
+function TopBar() {
+  const { slug } = useParams<{ slug: string }>();
+  return (
+    <header className="flex h-14 items-center justify-between border-b border-neutral-900 px-6">
+      <div className="text-sm text-neutral-600">
+        {slug ? (
+          <>
+            Workspace ativo:{" "}
+            <span className="font-mono text-neutral-950">{slug}</span>
+          </>
+        ) : (
+          <>
+            Nenhum workspace ativo —{" "}
+            <Link
+              to="/admin/workspaces"
+              className="text-neutral-950 underline-offset-2 hover:underline"
+            >
+              gerenciar
+            </Link>
+          </>
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        <AvatarWithWorkspaces />
+      </div>
+    </header>
+  );
+}
+
+function AvatarWithWorkspaces() {
+  const navigate = useNavigate();
+  const { data: workspaces } = useWorkspaces();
+
+  return (
+    <UserButton>
+      <UserButton.MenuItems>
+        {(workspaces ?? []).map((w) => (
+          <UserButton.Action
+            key={w.id}
+            label={w.executiveName}
+            labelIcon={<Briefcase className="h-4 w-4" strokeWidth={1.5} />}
+            onClick={() => navigate(`/w/${w.slug}`)}
+          />
+        ))}
+        <UserButton.Link
+          label="Gerenciar workspaces"
+          labelIcon={<Settings className="h-4 w-4" strokeWidth={1.5} />}
+          href="/admin/workspaces"
+        />
+      </UserButton.MenuItems>
+    </UserButton>
   );
 }
