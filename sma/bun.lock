@@ -12,6 +12,7 @@
       "name": "sma-app",
       "version": "0.1.0",
       "dependencies": {
+        "@clerk/localizations": "^4.7.1",
         "@clerk/react": "latest",
         "lucide-react": "latest",
         "react": "^19.0.0",
@@ -84,6 +85,8 @@
     "@babel/types": ["@babel/types@7.29.7", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA=="],
 
     "@clerk/backend": ["@clerk/backend@3.5.0", "", { "dependencies": { "@clerk/shared": "^4.15.0", "standardwebhooks": "^1.0.0", "tslib": "2.8.1" } }, "sha512-g1bjzqj7/mb6rnrQ5zr+ybjpilTIWADaCoHE1HnEAjQfbcdfn3gb9PPX0wJ1KWw8OOQEQYSjzXPzvofEB1j+ww=="],
+
+    "@clerk/localizations": ["@clerk/localizations@4.7.1", "", { "dependencies": { "@clerk/shared": "^4.15.0" } }, "sha512-EQWQnVCjkvFZKfQqlBQ2OT9GenC+5nORPNAMBPsY0Nw8pwHB/c1uPFDt5x6829UA1mxrmXXC0Ay0Q+muHlGLFw=="],
 
     "@clerk/react": ["@clerk/react@6.7.3", "", { "dependencies": { "@clerk/shared": "^4.15.0", "tslib": "2.8.1" }, "peerDependencies": { "react": "^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0", "react-dom": "^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0" } }, "sha512-xdml8bFXbOQ/Egyp7iI1f0ksLjw5nYu2Db+mttHpJzet7PRXQ3jBEEc2c0AYhOJvIYxJifHGBsf75NM8SwlOag=="],
 

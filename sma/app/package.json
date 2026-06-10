@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@clerk/localizations": "^4.7.1",
     "@clerk/react": "latest",
     "lucide-react": "latest",
     "react": "^19.0.0",
