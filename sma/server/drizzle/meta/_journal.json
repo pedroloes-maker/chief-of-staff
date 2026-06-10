@@ -8,6 +8,13 @@
       "when": 1781057093902,
       "tag": "0000_groovy_norman_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1781097065296,
+      "tag": "0001_abandoned_gamma_corps",
+      "breakpoints": true
     }
   ]
 }

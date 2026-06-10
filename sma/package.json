@@ -9,7 +9,8 @@
     "build": "bun run --cwd app build",
     "db:generate": "bun run --cwd server db:generate",
     "db:migrate": "bun run --cwd server db:migrate",
-    "db:studio": "bun run --cwd server db:studio"
+    "db:studio": "bun run --cwd server db:studio",
+    "gen-master-key": "bun run --cwd server gen-master-key"
   },
   "devDependencies": {
     "concurrently": "^9.0.0"

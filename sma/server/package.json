@@ -9,13 +9,16 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
+    "gen-master-key": "bun scripts/gen-master-key.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "latest",
     "@clerk/backend": "latest",
     "@neondatabase/serverless": "^0.10.0",
     "dotenv": "^16.4.0",
-    "drizzle-orm": "^0.45.0"
+    "drizzle-orm": "^0.45.0",
+    "libsodium-wrappers": "^0.7.15"
   },
   "devDependencies": {
     "@types/bun": "latest",
