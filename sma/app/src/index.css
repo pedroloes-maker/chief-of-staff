@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/* Tema SMA — preto e branco, sem gradientes. Designer passa depois. */
+@theme {
+  --color-base: #ffffff;
+  --color-elev: #f4f4f5;
+  --color-elev-hover: #e4e4e7;
+  --color-border: #1a1a1a;
+  --color-border-subtle: #d4d4d8;
+  --color-fg: #0a0a0a;
+  --color-fg-muted: #525252;
+  --color-accent-bg: #0a0a0a;
+  --color-accent-fg: #fafafa;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--color-base);
+  color: var(--color-fg);
+  -webkit-font-smoothing: antialiased;
+}

@@ -1,0 +1,17 @@
+{
+  "name": "sma",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["app", "server"],
+  "scripts": {
+    "dev": "concurrently --names \"app,server\" --prefix-colors \"black.bgWhite,white.bgBlack\" \"bun run --cwd app dev\" \"bun run --cwd server dev\"",
+    "build": "bun run --cwd app build",
+    "db:generate": "bun run --cwd server db:generate",
+    "db:migrate": "bun run --cwd server db:migrate",
+    "db:studio": "bun run --cwd server db:studio"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

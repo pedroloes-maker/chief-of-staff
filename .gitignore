@@ -1,8 +1,14 @@
 .env
 .env.*
+!.env.example
 .venv/
 node_modules/
 __pycache__/
 .DS_Store
 .claude/settings.local.json
 .claude/worktrees/
+dist/
+.cache/
+*.tsbuildinfo
+.playwright-mcp/
+sma-*.png
