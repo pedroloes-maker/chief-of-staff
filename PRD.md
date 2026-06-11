@@ -18,7 +18,9 @@ Duas fases de usuários:
 | Fase   | Usuários                              | App                                              |
 | ------ | ------------------------------------- | ------------------------------------------------ |
 | Fase 1 | Time SmartTalks (Pedro + colegas)     | `sma/` (este PRD) — roda local na máquina de cada um |
-| Fase 2 | Executivos (clientes)                 | App separado, UI distinta, sistema de créditos    |
+| Fase 2 | Executivos (clientes)                 | `chief/` — canvas de voz com UI generativa (o agente cria os widgets que precisa: input de texto, botões, auth, upload, stream de áudio) + sistema de créditos |
+
+**SMA e chief são complementares.** SMA é onde nosso time inspeciona, testa e configura os agentes (control plane); `chief/` é onde o executivo conversa com o chief-of-staff dele por voz/texto e a UI é gerada pelo próprio agente. Os dois compartilham a mesma família visual monocromática (§16.3). Além do `chief/`, o executivo também fala com o agente via **WhatsApp** (§13.2).
 
 Este PRD cobre apenas a Fase 1. Fase 2 será desenhada depois que Fase 1 estiver no ar com sinal real.
 
@@ -125,7 +127,7 @@ Não existe entidade `Account` separada no schema. O modelo é só `User` + `Wor
 2. **Writes vão pra Anthropic primeiro.** Se Anthropic falhar, não escrevemos no Neon. (Sem 2PC — `list` endpoints permitem rebuild se houver drift.)
 3. **Bun.serve stateless.** Worker de jobs em processo separado.
 4. **Sem Claude Code CLI.** Tudo via Managed Agents (orchestrator + builder sub-agent fazem o papel que antes era do builder Claude Code).
-5. **Sem gradientes, preto/branco** com contraste deliberado em bordas e tipografia.
+5. **Monocromático preto/branco/cinza, sem cor saturada.** Hairlines, tipografia e espaço carregam a hierarquia; vidro fosco discreto só em chrome (§16.3).
 6. **UI em português.**
 
 ### Stack
@@ -171,6 +173,7 @@ Vocabulário praticamente idêntico ao CMA, com deltas onde Managed Agents diver
 | `Credential`           | Mirror de credenciais MCP (auto-refresh é da Anthropic)                                      | **Credential**                      |
 | *`SecretEntry`*        | Cofre SMA-side pra non-MCP secrets (API key OpenAI, STT, Stripe etc.) — encriptado libsodium | None                                |
 | `Connection`           | Registro operator-facing de uma integração OAuth (Google, etc.)                             | None                                |
+| *`Channel`*            | Canal de conversa do executivo (whatsapp): provider (`baileys` \| `meta_cloud`), phone, auth state ref, status | None                                |
 | `Session`              | Mirror de `/v1/sessions` + cost + executive + tags                                           | **Session**                         |
 | `SessionEvent`         | Subset de eventos persistidos pra UI replay (não duplicamos tudo)                            | **Event**                           |
 | *`Hook`*               | Abstração SMA: trigger (pre_tool_use | session_idle | session_terminated | refresh_failed | custom_event) + action (custom_tool | webhook_relay | enqueue_job) | None |
@@ -587,6 +590,23 @@ Connection record no Neon: workspace_id, vault_id, kind=gmail, display_name, sta
 
 Anthropic auto-refresh do OAuth funciona sozinho.
 
+### 13.2 Canal WhatsApp do executivo
+
+O executivo também conversa com o chief-of-staff via **WhatsApp** (texto e áudio), além do app `chief/`. O canal entrega as mensagens na mesma session do orchestrator — memória e contexto são os mesmos independente de onde o executivo fala.
+
+**Fase 1 — Baileys (não-oficial).** Lib open-source `baileys` (WhatsApp Web multi-device, sem aprovação Meta):
+
+- Worker Bun separado (`scripts/whatsapp-worker.ts`) mantém um socket Baileys por workspace
+- Pareamento via QR code exibido em `/w/:slug/connections` (operator escaneia com o número dedicado do executivo)
+- Auth state do Baileys encriptado como `SecretEntry` no vault SMA do workspace
+- Inbound: mensagem WhatsApp → (se áudio: R2 → Whisper STT) → `user.message` na session do orchestrator
+- Outbound: resposta do agente → texto no WhatsApp (voice notes ficam pra quando tiver TTS, Fase 2)
+- 1 número WhatsApp por workspace/executivo
+
+**Fase 2 — Meta WhatsApp Business Cloud API.** Migramos quando hospedar: webhooks oficiais, templates aprovados, sem risco de ban, sem manter socket vivo. A entidade `Channel` abstrai o provider (`baileys | meta_cloud`) pra migração não vazar pro resto do app.
+
+**Riscos do Baileys (aceitos pra Fase 1):** lib não-oficial, risco de ban do número, sessão pode cair e exigir re-pareamento. Mitigação: número dedicado por executivo, monitorar `connection.update`, alertar o operator quando desconectar.
+
 ---
 
 ## 14. Arquivos e áudio (Cloudflare R2)
@@ -702,26 +722,34 @@ Top bar + left rail + main area (mesmo padrão CMA).
 - Mic: MediaRecorder → R2 → Whisper → texto preenchido (operator revisa antes de enviar) OU manda direto (configurável)
 - File attach: upload R2 + opcional anthropic.files.upload se sessão precisa
 
-### 16.3 Tema preto e branco
+### 16.3 Linguagem visual — monocromático "polished platinum"
 
-Tokens placeholder até designer passar:
+Mesma família material do app do executivo (`chief/`): preto, branco e tons de cinza — zero cor saturada, zero gradiente de cor. Onde o chief é uma lâmina escura de vidro polido, o SMA é a bancada de engenharia: chave clara, densa em informação, calma.
+
+Tokens (placeholder até designer passar):
 
 ```
---bg-base:        #FFFFFF
---bg-card:        #F4F4F5
---bg-card-hover:  #E4E4E7
---border:         #1A1A1A
---border-subtle:  #D4D4D8
---text-primary:   #0A0A0A
---text-muted:     #525252
---accent-bg:      #0A0A0A
---accent-text:    #FAFAFA
+--color-base:        #F5F5F7   (fundo da app)
+--color-surface:     #FFFFFF   (cards, tabelas, formulários)
+--color-elev:        #FAFAFA   (theads, estados hover suaves)
+--color-line:        rgb(0 0 0 / 0.08)   (hairline padrão)
+--color-line-strong: rgb(0 0 0 / 0.18)   (hairline de foco/hover)
+--color-fg:          #1D1D1F
+--color-fg-muted:    #6E6E73
+--color-fg-faint:    #AEAEB2
+--color-accent-bg:   #1D1D1F   (botões primários)
+--color-accent-fg:   #FFFFFF
+--radius-card:       20px      (cards) · 12px (inputs) · pílula (botões)
+--shadow-card:       sombras neutras de baixa opacidade (sem cor)
+--ease-glide:        cubic-bezier(0.22, 1, 0.36, 1)
 ```
 
-- Sem gradientes, sem sombras coloridas
-- Bordas 1px load-bearing
-- Hierarquia por peso e espaço
-- Lucide stroke
+- **Hairlines** (1px a 8% de preto) no lugar de bordas pretas duras; hierarquia por peso tipográfico, espaço e elevação sutil
+- **Cantos arredondados** em tudo: 20px cards, 12px inputs, botões em pílula (preto sobre branco)
+- **Vidro fosco discreto** (`backdrop-blur` + branco translúcido) **só em chrome** — sidebar, top bar, modais. Nunca em conteúdo.
+- Sem gradientes de cor, sem sombras coloridas; sombras neutras de baixa opacidade são permitidas pra elevação
+- Tipografia system (-apple-system / SF Pro), tracking apertado em títulos
+- Lucide stroke 1.5
 - UI inteira em **PT-BR**
 
 ---
@@ -820,6 +848,7 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 | SMA-21  | Página de custos (`/w/:slug/costs`) + admin `/admin/costs`           |
 | SMA-22  | Webhooks endpoint completo + lifecycle hooks atrelados               |
 | SMA-23  | Consolidação cron (curto/madrugada 03h + longo/dom 23h via builder) + `skill_sma_memory_consolidation` |
+| SMA-29  | Canal WhatsApp via Baileys: worker + QR pairing em `/connections` + roteamento inbound/outbound pra session do orchestrator (§13.2) |
 
 ### Fase 5 — Hardening + abstrações (a discutir)
 
@@ -874,6 +903,8 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 | 35  | Builder sub-agent: 2 capabilities (configuração + manutenção/consolidação) com skills dedicadas       |
 | 36  | MCP tunnels: fora de escopo Fase 1                                                                    |
 | 37  | TTS (resposta em voz): fora de escopo Fase 1 — só STT-in, text-out                                    |
+| 38  | Canal WhatsApp do executivo: Fase 1 via **Baileys** (não-oficial, QR pairing), Fase 2 migra pra **Meta WhatsApp Business Cloud API**; entidade `Channel` abstrai o provider |
+| 39  | Linguagem visual: monocromático "polished platinum" (§16.3) — hairlines, cantos arredondados (cards 20px, botões pílula), vidro fosco só em chrome; mesma família material do `chief/` |
 
 ---
 

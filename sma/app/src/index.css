@@ -1,16 +1,36 @@
 @import "tailwindcss";
 
-/* Tema SMA — preto e branco, sem gradientes. Designer passa depois. */
+/*
+ * Tema SMA — monocromático "polished platinum".
+ * Preto, branco e cinzas; sem cor saturada, sem gradiente de cor.
+ * Chave clara da mesma família material do app do executivo (chief/).
+ */
 @theme {
-  --color-base: #ffffff;
-  --color-elev: #f4f4f5;
-  --color-elev-hover: #e4e4e7;
-  --color-border: #1a1a1a;
-  --color-border-subtle: #d4d4d8;
-  --color-fg: #0a0a0a;
-  --color-fg-muted: #525252;
-  --color-accent-bg: #0a0a0a;
-  --color-accent-fg: #fafafa;
+  --color-base: #f5f5f7;
+  --color-surface: #ffffff;
+  --color-elev: #fafafa;
+  --color-elev-hover: #f0f0f2;
+  --color-line: rgb(0 0 0 / 0.08);
+  --color-line-strong: rgb(0 0 0 / 0.18);
+  --color-fg: #1d1d1f;
+  --color-fg-muted: #6e6e73;
+  --color-fg-faint: #aeaeb2;
+  --color-accent-bg: #1d1d1f;
+  --color-accent-fg: #ffffff;
+
+  --radius-card: 1.25rem;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.05);
+  --shadow-float: 0 2px 8px rgb(0 0 0 / 0.06), 0 24px 64px rgb(0 0 0 / 0.1);
+
+  --ease-glide: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Vidro fosco — só em chrome (sidebar, top bar, modais), nunca em conteúdo. */
+@utility glass {
+  background: rgb(255 255 255 / 0.66);
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
 }
 
 html,
@@ -21,8 +41,15 @@ body,
 }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    system-ui, sans-serif;
   background: var(--color-base);
   color: var(--color-fg);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(0 0 0 / 0.85);
+  color: #ffffff;
 }
