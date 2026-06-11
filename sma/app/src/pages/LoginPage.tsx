@@ -1,14 +1,16 @@
 import { SignIn } from "@clerk/react";
+import BrandMark from "../components/ui/BrandMark";
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-white">
-      <div className="w-full max-w-md p-8">
-        <div className="mb-8 text-center">
-          <h1 className="mb-2 text-3xl font-semibold tracking-tight text-neutral-950">
+    <div className="flex min-h-screen w-full items-center justify-center bg-base px-6">
+      <div className="w-full max-w-sm">
+        <div className="mb-10 flex flex-col items-center text-center">
+          <BrandMark size="lg" />
+          <h1 className="mt-5 text-2xl font-semibold tracking-tight text-fg">
             Chief-of-Staff
           </h1>
-          <p className="text-sm text-neutral-600">
+          <p className="mt-1.5 text-sm text-fg-muted">
             Acesso interno do time SmartTalks
           </p>
         </div>
@@ -16,14 +18,15 @@ export default function LoginPage() {
           appearance={{
             elements: {
               rootBox: "w-full",
-              card: "border border-neutral-900 shadow-none rounded-none",
-              headerTitle: "text-neutral-950",
-              headerSubtitle: "text-neutral-600",
+              card: "rounded-card border border-black/[0.08] bg-white shadow-card",
+              headerTitle: "text-fg tracking-tight",
+              headerSubtitle: "text-fg-muted",
               socialButtonsBlockButton:
-                "border border-neutral-900 rounded-none hover:bg-neutral-50",
+                "rounded-full border border-black/[0.12] transition-colors hover:bg-black/[0.03]",
+              formFieldInput: "rounded-xl border-black/[0.12]",
               formButtonPrimary:
-                "bg-neutral-950 hover:bg-neutral-800 rounded-none text-white",
-              footerActionLink: "text-neutral-950 hover:text-neutral-700",
+                "rounded-full bg-accent-bg text-white transition-colors hover:bg-black",
+              footerActionLink: "text-fg hover:text-fg-muted",
             },
           }}
         />

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useApi, type Workspace } from "../lib/api";
+import Card from "../components/ui/Card";
 import NotFoundPage from "./NotFoundPage";
 
 export default function WorkspaceDashboardPage() {
@@ -32,7 +33,9 @@ export default function WorkspaceDashboardPage() {
   }, [slug, api]);
 
   if (status === "loading") {
-    return <div className="p-8 text-sm text-neutral-600">Carregando workspace…</div>;
+    return (
+      <div className="px-10 py-12 text-sm text-fg-muted">Carregando workspace…</div>
+    );
   }
   if (status === "not_found") {
     return (
@@ -43,8 +46,8 @@ export default function WorkspaceDashboardPage() {
   }
   if (status === "error") {
     return (
-      <div className="p-8">
-        <div className="border border-neutral-900 bg-white p-4 text-sm text-neutral-950">
+      <div className="px-10 py-12">
+        <div className="rounded-card border border-line bg-surface p-6 text-sm text-fg shadow-card">
           Erro ao carregar workspace: {error}
         </div>
       </div>
@@ -53,39 +56,28 @@ export default function WorkspaceDashboardPage() {
   if (!workspace) return null;
 
   return (
-    <div className="p-8">
-      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-neutral-500">
+    <div className="mx-auto max-w-5xl px-10 py-12">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-fg-faint">
         Workspace · {workspace.slug}
-      </div>
-      <h1 className="mb-2 text-2xl font-semibold tracking-tight text-neutral-950">
+      </p>
+      <h1 className="mt-1 text-[28px] font-semibold tracking-tight text-fg">
         {workspace.displayName}
       </h1>
-      <p className="text-sm text-neutral-600">
-        Executivo: <strong>{workspace.executiveName}</strong>
+      <p className="mt-2 text-sm text-fg-muted">
+        Executivo: <span className="font-medium text-fg">{workspace.executiveName}</span>
       </p>
 
-      <div className="mt-8 grid max-w-3xl gap-4 md:grid-cols-2">
+      <div className="mt-10 grid max-w-3xl gap-4 md:grid-cols-2">
         <Card title="Status" body={workspace.status === "active" ? "Ativo" : "Arquivado"} />
         <Card title="Próximo ticket" body="SMA-8 — provisionar orchestrator + builder via script" />
       </div>
 
-      <div className="mt-8 max-w-3xl border border-neutral-300 bg-neutral-50 p-4">
-        <p className="text-sm text-neutral-700">
+      <div className="mt-6 max-w-3xl rounded-card border border-dashed border-black/[0.15] p-6">
+        <p className="text-sm leading-relaxed text-fg-muted">
           Dashboard placeholder. Features (agentes, sessões, memória, chat, jobs)
           entram nos próximos tickets.
         </p>
       </div>
-    </div>
-  );
-}
-
-function Card({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="border border-neutral-900 bg-white p-4">
-      <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-        {title}
-      </div>
-      <div className="mt-2 text-sm text-neutral-950">{body}</div>
     </div>
   );
 }
