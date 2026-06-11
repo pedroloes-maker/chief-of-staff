@@ -97,8 +97,41 @@ sma/
 └── package.json        # workspaces + dev script
 ```
 
+## Provisionar primeiro workspace
+
+Depois de conectar um workspace pela UI (`/workspaces`, que valida a Anthropic
+API key e cria o registro no Neon), rode o script de provisão pra criar o
+stack inicial de agentes na conta Anthropic correspondente:
+
+```bash
+cd server
+bun run scripts/provision-workspace.ts --workspace=<slug>
+```
+
+O script é **idempotente** — re-rodar não duplica. Cada chamada checa o
+mirror no Neon antes de criar na Anthropic e reusa o ID quando já existe.
+
+O que é criado, por workspace:
+
+| Recurso | Quantidade | Detalhe |
+|---|---|---|
+| Custom skill | 2 | `skill_sma_config`, `skill_sma_memory_consolidation` (PT-BR) |
+| Memory store | 3 | `memstore_<slug>_short`, `_long`, `_knowledge` |
+| Agent | 2 | `<slug>_builder` (control-plane), `<slug>_orchestrator` (chief-of-staff) |
+| Link agent↔memory | 6 | builder = RW em todas; orchestrator = RW em short, RO no resto |
+| Cron job | 2 | `consolidate_short` (`0 3 * * *`), `consolidate_long` (`0 23 * * 0`) — alvo: builder |
+
+**Limitação dev:** quando `SMA_BASE_URL` aponta pra loopback (`localhost`,
+`127.0.0.1`), o orchestrator é criado **sem** o MCP server `sma` registrado
+— a Anthropic recusa URLs loopback porque o runtime deles não acessa sua
+máquina. Re-rode a provisão depois que o SMA-10 estiver exposto publicamente
+(tunnel ou deploy) pra atualizar o agent.
+
+**Iteração de prompts e tools:** o script só **provisiona presença**, não
+sobrescreve config existente. Pra mudar system prompts, tools ou skills,
+use o `/chat` com o builder (Fase 1, validação manual) — cada mudança vira
+nova versão Anthropic.
+
 ## Próximos passos
 
-Ver [`../PRD.md`](../PRD.md) §19 pra o plano completo de fases. **SMA-7** entra
-com o modelo de Workspace + wiring do Anthropic SDK; **SMA-8** provisiona o
-primeiro orchestrator + builder de um workspace de validação.
+Ver [`../PRD.md`](../PRD.md) §19 pra o plano completo de fases.

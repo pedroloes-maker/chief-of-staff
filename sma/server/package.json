@@ -10,6 +10,7 @@
     "db:migrate": "bun src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "gen-master-key": "bun scripts/gen-master-key.ts",
+    "provision-workspace": "bun scripts/provision-workspace.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
