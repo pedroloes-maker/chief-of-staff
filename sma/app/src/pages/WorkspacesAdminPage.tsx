@@ -146,7 +146,7 @@ function ConnectWorkspaceForm({
       </h2>
       <p className="mt-1 mb-6 text-sm leading-relaxed text-fg-muted">
         A API key vai ser validada chamando o endpoint da Anthropic, depois
-        encriptada at-rest com libsodium e persistida.
+        encriptada at-rest (AES-256-GCM) e persistida.
       </p>
 
       <Field label="Nome do executivo" hint="Ex: Pedro Loes. Usado pra gerar o slug da URL.">
