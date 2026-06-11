@@ -1,6 +1,6 @@
 # PRD — Chief-of-Staff (SMA)
 
-**Status:** Draft v1 · 2026-06-09 · For Pedro's review before ticket creation
+**Status:** v1.1 · 2026-06-11 · decisões #38–41 incorporadas (tunnel MCP, jobs best-effort, AES-GCM, WhatsApp)
 **Folder:** `sma/` (sibling to the reference app `cma/`)
 **Audience:** Engineering team (internal); later, separate end-user app
 **Language:** Portuguese-only UI for now; multi-language deferred
@@ -171,10 +171,10 @@ Vocabulário praticamente idêntico ao CMA, com deltas onde Managed Agents diver
 | `Environment`          | Mirror de `/v1/environments`                                                                 | **Environment**                     |
 | `Vault`                | Mirror estendido de `/v1/vaults` + cofre nosso pra non-MCP secrets (per-workspace)          | **Vault** (estendido)               |
 | `Credential`           | Mirror de credenciais MCP (auto-refresh é da Anthropic)                                      | **Credential**                      |
-| *`SecretEntry`*        | Cofre SMA-side pra non-MCP secrets (API key OpenAI, STT, Stripe etc.) — encriptado libsodium | None                                |
+| *`SecretEntry`*        | Cofre SMA-side pra non-MCP secrets (API key OpenAI, STT, Stripe etc.) — encriptado AES-256-GCM (`crypto.subtle`) | None                                |
 | `Connection`           | Registro operator-facing de uma integração OAuth (Google, etc.)                             | None                                |
 | *`Channel`*            | Canal de conversa do executivo (whatsapp): provider (`baileys` \| `meta_cloud`), phone, auth state ref, status | None                                |
-| `Session`              | Mirror de `/v1/sessions` + cost + executive + tags                                           | **Session**                         |
+| `Session`              | Mirror de `/v1/sessions` + cost + executive + tags + source (`web` \| `whatsapp` \| `job`)   | **Session**                         |
 | `SessionEvent`         | Subset de eventos persistidos pra UI replay (não duplicamos tudo)                            | **Event**                           |
 | *`Hook`*               | Abstração SMA: trigger (pre_tool_use | session_idle | session_terminated | refresh_failed | custom_event) + action (custom_tool | webhook_relay | enqueue_job) | None |
 | *`HookRun`*            | Histórico de execuções de hook                                                              | None                                |
@@ -436,6 +436,15 @@ Pra Fase 1, espelho 1:1 dos do CMA:
 
 Auth: OAuth Google → vault Anthropic com credential `mcp_oauth`. Anthropic auto-refresh.
 
+### 9.5 Reachability em Fase 1 (local) — tunnel
+
+Anthropic precisa **alcançar** nossos MCP servers em session time — localhost não serve. Padrão herdado do CMA (`cma/.env.example`, `cma/docs/11-mcp-conectores.md`):
+
+- Tunnel (**cloudflared**/ngrok) expõe o `Bun.serve` local; as URLs `/api/mcp/*` registradas na Anthropic usam o hostname público do tunnel
+- Preferência por **named tunnel** (hostname estável) pra não re-registrar URLs a cada restart
+- O fluxo de credenciais não muda: operator autentica **uma vez**, refresh token vai pro vault Anthropic, auto-refresh cuida do resto — o tunnel é só transporte
+- **MCP Tunnels da Anthropic** (research preview, cloudflared-based, até 10/org, token `org:manage_tunnels`): caminho preferido quando liberado pra nós — pareamento gerenciado direto no Console
+
 ---
 
 ## 10. Hooks no SMA
@@ -503,7 +512,9 @@ Lógica:
 - `setInterval(60_000)`
 - Cada tick: `SELECT * FROM jobs WHERE enabled AND next_run_at <= now()`
 - Por job: cria session, manda `kickoff_event`, persiste `JobRun`, atualiza `next_run_at` pelo cron expr (lib `cron-parser`)
-- Sessões longas: usamos webhook (`session.status_terminated`) pra fechar o JobRun async
+- Sessões longas: usamos webhook (`session.status_terminated`) pra fechar o JobRun async; enquanto não houver hostname público estável, polling de status fecha o JobRun
+
+**Fase 1 (local-only) — best-effort, aceito:** o worker roda na máquina do operator; jobs disparam só com a máquina acordada. Próximo passo: **Mac mini always-on** dedicado rodando o worker (e o tunnel §9.5). Depois: deploy cloud (Fase 2).
 
 ### 11.3 Casos de uso iniciais (defaults — todos configuráveis via builder)
 
@@ -554,7 +565,7 @@ SecretEntry  (SMA-only)
 
 ### 12.3 Criptografia dos SecretEntry
 
-- Encryption at rest: **libsodium secretbox** com chave mestra em env var (`SMA_SECRETS_MASTER_KEY`)
+- Encryption at rest: **AES-256-GCM via `crypto.subtle`** (built-in do runtime, sem dependência nativa — validado desde SMA-7) com chave mestra em env var (`SMA_SECRETS_MASTER_KEY`)
 - Por entrada: salt aleatório, ciphertext em coluna `bytea`
 - Operator nunca vê o valor cru após criar; UI mostra `••••` + botão "rotacionar"
 - Acesso programático: só de dentro do server (não exposto via API HTTP)
@@ -655,6 +666,8 @@ Você pediu uma página de custos como tem no CMA. Tem.
 - Persistimos `CostEntry`: `model`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `usd_estimate`
 - Tabela `ModelPricing` (igual cma) com USD/1M tokens editável
 - Sessões em andamento: pollamos periodicamente pra mostrar custo parcial vivo
+
+**Fase 1 (local):** sem endpoint público estável pro webhook — capturamos custo por **polling** do usage da session (intervalo curto enquanto ativa + leitura final no idle/terminated). O webhook assume quando houver hostname público (tunnel no Mac mini / deploy).
 
 ### 15.2 Página `/w/:slug/costs`
 
@@ -794,71 +807,47 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 
 ## 19. Phased plan (atualizado)
 
-### Fase 1 — Infra (só Ticket #1)
+> **Numeração:** os IDs reais de ticket vivem no **Linear** (a numeração planejada na v1 desta seção divergiu da real). Esta seção lista só nomes, por fase. Criamos tickets no Linear no máximo **uma fase à frente**, conforme a anterior fecha. ✅ = entregue.
 
-**SMA-6 (huge) — sma/ bootstrap (infra-only)**
+### Fase 1 — Infra
 
-- `sma/app/` (Vite + React + Tailwind 4 + Lucide + Clerk SDK)
-- `sma/server/` (Bun.serve) com `/health`
-- Neon projeto provisionado, Drizzle conectado, 1 tabela placeholder (`users`)
-- Clerk projeto criado, **restrição de domínio `@smarttalks.ai`** configurada via JWT template / restricted email list
-- Login flow E2E funcional
-- App shell renderizado: top bar, left rail (inert), avatar menu (stub do switcher)
-- B&W tokens aplicados
-- UI strings em **PT-BR** desde o início
-- `.env.example` lista TUDO: Clerk pub/secret, Neon URL, Anthropic API key (futuro), R2 (futuro), Whisper key (futuro), Google OAuth (futuro), `SMA_SECRETS_MASTER_KEY`
-- `sma/README.md` com setup completo
-- `bun run dev` sobe ambos
-
-**Acceptance SMA-6:**
-- `bun install && bun run dev` → login page em PT
-- Login com `@smarttalks.ai` funciona → cai na app shell com avatar
-- Login com qualquer outro domínio → bloqueado com mensagem
-- `/health` retorna 200 confirmando Neon conectado
-- Nenhuma feature além disso
+- Bootstrap `sma/` infra-only — Vite + Bun + Neon + Clerk, app shell, tokens B&W, PT-BR ✅
 
 ### Fase 2 — Mirror foundation + multi-agent
 
-| ID      | Título                                                              |
-| ------- | ------------------------------------------------------------------- |
-| SMA-7   | Anthropic SDK wiring + Workspace model + workspace switcher na URL  |
-| SMA-8   | Script de provisionamento manual: orchestrator + builder pro primeiro workspace |
-| SMA-9   | Agents list + create + multiagent roster UI                         |
-| SMA-10  | Custom MCP server skeleton (`/api/mcp/sma`) + tool `executive_profile` |
-| SMA-11  | Sessions + chat page (text only) + event stream + cost capture       |
-| SMA-12  | Vault dual model (Anthropic mirror + SecretEntry com libsodium)      |
-| SMA-13  | Conexão Gmail (OAuth → Anthropic vault) + Gmail MCP                  |
+- Anthropic SDK wiring + Workspace model + workspace switcher na URL ✅
+- Script de provisionamento manual: orchestrator + builder pro primeiro workspace ✅
+- Redesign "polished platinum" + PRD WhatsApp/chief ✅
+- **Sessions + chat page (text only) + event stream + cost capture** ← próximo (slice que valida o provisionamento)
+- Agents list + create + multiagent roster UI
+- Custom MCP server skeleton (`/api/mcp/sma`) + tool `executive_profile` + tunnel (§9.5)
+- Vault dual model (Anthropic mirror + SecretEntry com AES-GCM)
+- Conexão Gmail (OAuth → Anthropic vault) + Gmail MCP
 
 ### Fase 3 — Memory + hooks + jobs + R2
 
-| ID      | Título                                                              |
-| ------- | ------------------------------------------------------------------- |
-| SMA-14  | Memory stores (criar, attach, browser UI, versions, redact)         |
-| SMA-15  | Skills + custom tools (CRUD + attach a agent)                       |
-| SMA-16  | Hooks abstraction (UI + tradução para permission_policy/custom_tool/webhook) |
-| SMA-17  | Jobs system (worker Postgres-backed + página + builder pode criar) |
-| SMA-18  | Cloudflare R2 wiring + file upload pipeline                          |
-| SMA-19  | Audio recording + Whisper STT pipeline                              |
+- Memory stores (criar, attach, browser UI, versions, redact)
+- Skills + custom tools (CRUD + attach a agent)
+- Hooks abstraction (UI + tradução para permission_policy/custom_tool/webhook)
+- Jobs system (worker Postgres-backed + página + builder pode criar)
+- Cloudflare R2 wiring + file upload pipeline
+- Audio recording + Whisper STT pipeline
 
-### Fase 4 — Páginas restantes
+### Fase 4 — Páginas restantes + canais
 
-| ID      | Título                                                              |
-| ------- | ------------------------------------------------------------------- |
-| SMA-20  | Drive + Calendar MCP connectors                                      |
-| SMA-21  | Página de custos (`/w/:slug/costs`) + admin `/admin/costs`           |
-| SMA-22  | Webhooks endpoint completo + lifecycle hooks atrelados               |
-| SMA-23  | Consolidação cron (curto/madrugada 03h + longo/dom 23h via builder) + `skill_sma_memory_consolidation` |
-| SMA-29  | Canal WhatsApp via Baileys: worker + QR pairing em `/connections` + roteamento inbound/outbound pra session do orchestrator (§13.2) |
+- Drive + Calendar MCP connectors
+- Página de custos (`/w/:slug/costs`) + admin `/admin/costs`
+- Webhooks endpoint completo + lifecycle hooks atrelados (requer hostname público — §9.5)
+- Consolidação cron (curto/madrugada 03h + longo/dom 23h via builder) + `skill_sma_memory_consolidation`
+- Canal WhatsApp via Baileys: worker + QR pairing em `/connections` + roteamento inbound/outbound pra session do orchestrator (§13.2)
 
 ### Fase 5 — Hardening + abstrações (a discutir)
 
-| ID      | Título                                                              |
-| ------- | ------------------------------------------------------------------- |
-| SMA-24  | Dreaming integration (quando Anthropic liberar pra nós)              |
-| SMA-25  | Agent templates como feature (tabela editável + UI fork/duplicar)    |
-| SMA-26  | Reconciliador admin (quando virar dor)                              |
-| SMA-27  | RBAC granular per-workspace + audit log                              |
-| SMA-28  | Observability (tracing, alertas)                                     |
+- Dreaming integration (quando Anthropic liberar pra nós)
+- Agent templates como feature (tabela editável + UI fork/duplicar)
+- Reconciliador admin (quando virar dor)
+- RBAC granular per-workspace + audit log
+- Observability (tracing, alertas)
 
 ---
 
@@ -867,7 +856,7 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 | #   | Decisão                                                                                              |
 | --- | ---------------------------------------------------------------------------------------------------- |
 | 1   | Folder: `sma/` na raiz, sibling de `cma/`                                                            |
-| 2   | Stack: React+Vite, Bun, Neon, Clerk, Drizzle, libsodium, Cloudflare R2, OpenAI Whisper, OpenAI       |
+| 2   | Stack: React+Vite, Bun, Neon, Clerk, Drizzle, AES-GCM (`crypto.subtle`), Cloudflare R2, OpenAI Whisper, OpenAI |
 | 3   | Auth: Clerk + Google OAuth. **Restrição de domínio `@smarttalks.ai` adiada pra Fase 2 (hospedagem)** — Fase 1 é local-only, qualquer Google account loga (acesso real é gated pelo repositório) |
 | 4   | DB: Neon (projeto novo)                                                                              |
 | 5   | Mirror direction: Anthropic-first, Neon-mirror                                                       |
@@ -883,7 +872,7 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 | 15  | Memória: múltiplas memory stores por workspace; tiers `short` / `long` / `knowledge`                 |
 | 16  | Consolidação semanal short → long via cron                                                           |
 | 17  | Memory versioning: usar nativo da Anthropic                                                          |
-| 18  | Vault estendido: MCP credentials (Anthropic) + SecretEntry SMA-side (libsodium) per-workspace        |
+| 18  | Vault estendido: MCP credentials (Anthropic) + SecretEntry SMA-side (AES-256-GCM via `crypto.subtle`) per-workspace |
 | 19  | Hooks: abstração SMA traduzida pros primitivos Anthropic (permission_policy + tool_confirmation + webhooks + custom_tools) |
 | 20  | Cloudflare R2 pra files + audio (não trafegar entre APIs)                                            |
 | 21  | STT: OpenAI Whisper (aberto a revisão)                                                                |
@@ -901,18 +890,20 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 | 33  | Agent templates como feature: **Fase 2** (depois de validar 1 workspace manual)                       |
 | 34  | Consolidação de memória: **curto** diário 03h, **longo** dom 23h, configurável via builder            |
 | 35  | Builder sub-agent: 2 capabilities (configuração + manutenção/consolidação) com skills dedicadas       |
-| 36  | MCP tunnels: fora de escopo Fase 1                                                                    |
+| 36  | Reachability MCP em Fase 1: **tunnel** (cloudflared/ngrok, hostname estável — padrão CMA, §9.5); MCP Tunnels da Anthropic quando liberados pra nós |
 | 37  | TTS (resposta em voz): fora de escopo Fase 1 — só STT-in, text-out                                    |
 | 38  | Canal WhatsApp do executivo: Fase 1 via **Baileys** (não-oficial, QR pairing), Fase 2 migra pra **Meta WhatsApp Business Cloud API**; entidade `Channel` abstrai o provider |
 | 39  | Linguagem visual: monocromático "polished platinum" (§16.3) — hairlines, cantos arredondados (cards 20px, botões pílula), vidro fosco só em chrome; mesma família material do `chief/` |
+| 40  | Jobs em Fase 1: **best-effort** na máquina do operator (roda só acordada — aceito); próximo passo **Mac mini always-on** rodando worker + tunnel; depois deploy cloud |
+| 41  | Custos em Fase 1: **polling** de usage da session (webhook assume quando houver hostname público estável) |
 
 ---
 
 ## 21. Open questions — todas resolvidas
 
-Todas as 8 perguntas da v0/v1 estão respondidas (decisões 29-37 na §20). PRD pronto pra virar tickets.
+Todas as perguntas da v0/v1 estão respondidas (decisões 29-41 na §20).
 
-**Próximo passo:** quando você confirmar o v1 final, converto a §19 em tickets Linear (um por linha) com acceptance criteria completos. Começamos por **SMA-6** (infra-only, ainda válido como Ticket #1).
+**Processo de tickets:** criamos tickets no Linear no máximo uma fase à frente, conforme a fase anterior fecha. A numeração SMA-N real é a do Linear — a §19 lista só nomes.
 
 **Revisitar conforme o produto evoluir** (não bloqueiam tickets):
 - Deploy story Fase 2 (local-only até lá)
