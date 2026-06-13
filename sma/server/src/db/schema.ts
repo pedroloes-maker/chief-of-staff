@@ -1,4 +1,16 @@
-import { boolean, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 
 // Placeholder mínimo (SMA-6). Sync com Clerk vem quando precisarmos
 // referenciar usuário de forma persistente (futuros tickets).
@@ -195,3 +207,132 @@ export const jobs = pgTable(
 
 export type Job = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
+
+// Espelho de Anthropic Managed Agents Session. source identifica de onde a
+// conversa veio (chat web, WhatsApp, job cron) — mesma session do orchestrator
+// independente do canal. Os campos de usage são cumulativos da Anthropic
+// (último polling); a CostEntry guarda o valor em USD pra página de custos.
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    anthropicSessionId: text("anthropic_session_id").notNull(),
+    // agent alvo da session (orchestrator em Fase 1). Nullable: se o mirror do
+    // agent sumir, mantemos a session pra histórico/custo.
+    agentId: uuid("agent_id").references(() => agents.id, {
+      onDelete: "set null",
+    }),
+    source: text("source")
+      .$type<"web" | "whatsapp" | "job">()
+      .default("web")
+      .notNull(),
+    status: text("status")
+      .$type<"rescheduling" | "running" | "idle" | "terminated">()
+      .default("running")
+      .notNull(),
+    title: text("title"),
+    model: text("model"),
+    inputTokens: integer("input_tokens").default(0).notNull(),
+    outputTokens: integer("output_tokens").default(0).notNull(),
+    cacheReadInputTokens: integer("cache_read_input_tokens").default(0).notNull(),
+    cacheCreationInputTokens: integer("cache_creation_input_tokens")
+      .default(0)
+      .notNull(),
+    usdEstimate: numeric("usd_estimate", { precision: 12, scale: 6 })
+      .default("0")
+      .notNull(),
+    createdBy: text("created_by").notNull(), // = clerk_user_id
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    workspaceIdx: index("sessions_workspace_idx").on(t.workspaceId),
+    anthropicIdx: uniqueIndex("sessions_anthropic_id_idx").on(
+      t.anthropicSessionId,
+    ),
+  }),
+);
+
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;
+
+// Subset renderável do event stream da Anthropic, persistido pra reload do
+// chat (não duplicamos o stream inteiro — só o que a UI mostra). seq dá ordem
+// estável de inserção. payload guarda o evento normalizado pro renderer.
+export const sessionEvents = pgTable(
+  "session_events",
+  {
+    seq: serial("seq").primaryKey(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    anthropicEventId: text("anthropic_event_id"),
+    type: text("type").notNull(),
+    payload: jsonb("payload").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    sessionIdx: index("session_events_session_idx").on(t.sessionId),
+  }),
+);
+
+export type SessionEvent = typeof sessionEvents.$inferSelect;
+export type NewSessionEvent = typeof sessionEvents.$inferInsert;
+
+// Ledger de custo por session. Como a Anthropic devolve usage cumulativo,
+// mantemos uma linha por session (upsert) refletindo o total corrente.
+export const costEntries = pgTable(
+  "cost_entries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    model: text("model"),
+    inputTokens: integer("input_tokens").default(0).notNull(),
+    outputTokens: integer("output_tokens").default(0).notNull(),
+    cacheReadInputTokens: integer("cache_read_input_tokens").default(0).notNull(),
+    cacheCreationInputTokens: integer("cache_creation_input_tokens")
+      .default(0)
+      .notNull(),
+    usdEstimate: numeric("usd_estimate", { precision: 12, scale: 6 })
+      .default("0")
+      .notNull(),
+    capturedAt: timestamp("captured_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    sessionIdx: uniqueIndex("cost_entries_session_idx").on(t.sessionId),
+    workspaceIdx: index("cost_entries_workspace_idx").on(t.workspaceId),
+  }),
+);
+
+export type CostEntry = typeof costEntries.$inferSelect;
+export type NewCostEntry = typeof costEntries.$inferInsert;
+
+// Preços por modelo em USD por 1M tokens. Editável (página de custos / admin).
+// Seed idempotente com os modelos conhecidos em lib/pricing.ts.
+export const modelPricing = pgTable("model_pricing", {
+  model: text("model").primaryKey(),
+  inputPerMtok: numeric("input_per_mtok", { precision: 12, scale: 4 })
+    .default("0")
+    .notNull(),
+  outputPerMtok: numeric("output_per_mtok", { precision: 12, scale: 4 })
+    .default("0")
+    .notNull(),
+  cacheReadPerMtok: numeric("cache_read_per_mtok", { precision: 12, scale: 4 })
+    .default("0")
+    .notNull(),
+  cacheWritePerMtok: numeric("cache_write_per_mtok", { precision: 12, scale: 4 })
+    .default("0")
+    .notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type ModelPricing = typeof modelPricing.$inferSelect;
+export type NewModelPricing = typeof modelPricing.$inferInsert;

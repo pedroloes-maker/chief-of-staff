@@ -1,0 +1,427 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
+import {
+  ArrowUp,
+  ChevronRight,
+  Loader2,
+  Mic,
+  Paperclip,
+  Wrench,
+} from "lucide-react";
+import { useApi, type PersistedEvent } from "../lib/api";
+
+type ToolItem = {
+  kind: "tool";
+  id: string;
+  name: string;
+  input: unknown;
+  custom: boolean;
+  result?: { text: string; isError: boolean };
+};
+
+type ChatItem =
+  | { kind: "user"; id: string; text: string }
+  | { kind: "agent"; id: string; text: string }
+  | { kind: "thinking"; id: string }
+  | ToolItem
+  | { kind: "error"; id: string; message: string };
+
+type CostSummary = {
+  usd: number;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+let localSeq = 0;
+const nextId = () => `local-${localSeq++}`;
+
+export default function ChatPage() {
+  const { slug } = useParams<{ slug: string }>();
+  const [searchParams] = useSearchParams();
+  const api = useApi();
+
+  const [items, setItems] = useState<ChatItem[]>([]);
+  const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(
+    searchParams.get("session"),
+  );
+  const [cost, setCost] = useState<CostSummary | null>(null);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef<string | null>(sessionId);
+  sessionIdRef.current = sessionId;
+
+  // Resume: se vier ?session=<id>, carrega o histórico renderável persistido.
+  useEffect(() => {
+    const resume = searchParams.get("session");
+    if (!resume) return;
+    setSessionId(resume);
+    void api.getSessionEvents(resume).then((events) => {
+      setItems(buildItemsFromPersisted(events));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get("session")]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [items, streaming]);
+
+  const applyEvent = useCallback((event: string, data: unknown) => {
+    const d = data as Record<string, unknown>;
+    switch (event) {
+      case "agent.message":
+        setItems((prev) => [
+          ...prev,
+          { kind: "agent", id: String(d.id ?? nextId()), text: String(d.text ?? "") },
+        ]);
+        break;
+      case "agent.thinking":
+        setItems((prev) => [...prev, { kind: "thinking", id: String(d.id ?? nextId()) }]);
+        break;
+      case "agent.tool_use":
+      case "agent.custom_tool_use":
+        setItems((prev) => [
+          ...prev,
+          {
+            kind: "tool",
+            id: String(d.id ?? nextId()),
+            name: String(d.name ?? "tool"),
+            input: d.input,
+            custom: event === "agent.custom_tool_use",
+          },
+        ]);
+        break;
+      case "agent.tool_result":
+        setItems((prev) =>
+          prev.map((it) =>
+            it.kind === "tool" && it.id === String(d.toolUseId)
+              ? { ...it, result: { text: String(d.text ?? ""), isError: Boolean(d.isError) } }
+              : it,
+          ),
+        );
+        break;
+      case "cost":
+        setCost({
+          usd: Number(d.usd ?? 0),
+          inputTokens: Number(d.inputTokens ?? 0),
+          outputTokens: Number(d.outputTokens ?? 0),
+        });
+        break;
+      case "error":
+        setItems((prev) => [
+          ...prev,
+          { kind: "error", id: nextId(), message: String(d.message ?? "erro") },
+        ]);
+        break;
+      default:
+        break;
+    }
+  }, []);
+
+  const send = useCallback(async () => {
+    const text = input.trim();
+    if (!text || streaming || !slug) return;
+    setInput("");
+    setItems((prev) => [...prev, { kind: "user", id: nextId(), text }]);
+    setStreaming(true);
+    try {
+      let id = sessionIdRef.current;
+      if (!id) {
+        const created = await api.createSession(slug);
+        id = created.id;
+        setSessionId(id);
+      }
+      await api.streamMessage(id, text, applyEvent);
+    } catch (err) {
+      setItems((prev) => [
+        ...prev,
+        {
+          kind: "error",
+          id: nextId(),
+          message: err instanceof Error ? err.message : String(err),
+        },
+      ]);
+    } finally {
+      setStreaming(false);
+    }
+  }, [api, applyEvent, input, slug, streaming]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="glass z-10 flex h-16 shrink-0 items-center justify-between border-b border-line px-8">
+        <div>
+          <h1 className="text-sm font-semibold tracking-tight text-fg">Chat</h1>
+          <p className="text-[11px] text-fg-muted">
+            Orchestrator · workspace <span className="font-mono">{slug}</span>
+          </p>
+        </div>
+        {cost && (
+          <div className="rounded-full border border-line bg-surface px-3 py-1 text-[11px] text-fg-muted shadow-card">
+            {cost.inputTokens.toLocaleString("pt-BR")} in ·{" "}
+            {cost.outputTokens.toLocaleString("pt-BR")} out ·{" "}
+            <span className="font-medium text-fg">
+              {cost.usd.toLocaleString("pt-BR", {
+                style: "currency",
+                currency: "USD",
+                minimumFractionDigits: cost.usd < 0.01 ? 4 : 2,
+              })}
+            </span>
+          </div>
+        )}
+      </header>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl px-6 py-8">
+          {items.length === 0 && !streaming ? (
+            <EmptyState />
+          ) : (
+            <div className="space-y-4">
+              {items.map((it) => (
+                <Item key={it.id} item={it} />
+              ))}
+              {streaming && <Pending />}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <Composer
+        value={input}
+        onChange={setInput}
+        onSend={() => void send()}
+        disabled={streaming}
+      />
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="mx-auto mt-24 max-w-md text-center">
+      <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-bg shadow-card">
+        <div className="h-5 w-5 rounded-full border-2 border-white/90" />
+      </div>
+      <h2 className="text-lg font-semibold tracking-tight text-fg">
+        Converse com o chief-of-staff
+      </h2>
+      <p className="mt-2 text-sm leading-relaxed text-fg-muted">
+        Mande uma mensagem pra iniciar uma sessão com o agente orchestrator deste
+        workspace. Peça pra configurar agentes, criar jobs, ou consultar a memória.
+      </p>
+    </div>
+  );
+}
+
+function Item({ item }: { item: ChatItem }) {
+  switch (item.kind) {
+    case "user":
+      return (
+        <div className="flex justify-end">
+          <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-accent-bg px-4 py-2.5 text-sm leading-relaxed text-accent-fg shadow-card">
+            {item.text}
+          </div>
+        </div>
+      );
+    case "agent":
+      return (
+        <div className="flex justify-start">
+          <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-md border border-line bg-surface px-4 py-2.5 text-sm leading-relaxed text-fg shadow-card">
+            {item.text}
+          </div>
+        </div>
+      );
+    case "thinking":
+      return (
+        <div className="flex items-center gap-2 pl-1 text-[11px] text-fg-faint">
+          <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
+          Pensando…
+        </div>
+      );
+    case "tool":
+      return <ToolCard item={item} />;
+    case "error":
+      return (
+        <div className="rounded-xl border border-line bg-elev px-4 py-2.5 text-sm text-fg">
+          <span className="font-medium">Erro:</span> {item.message}
+        </div>
+      );
+  }
+}
+
+function ToolCard({ item }: { item: ToolItem }) {
+  const [open, setOpen] = useState(item.custom);
+  return (
+    <div className="rounded-xl border border-line bg-surface shadow-card">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left"
+      >
+        <ChevronRight
+          className={`h-3.5 w-3.5 text-fg-faint transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+          strokeWidth={2}
+        />
+        <Wrench className="h-3.5 w-3.5 text-fg-muted" strokeWidth={1.5} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-faint">
+          {item.custom ? "Ação do builder" : "Ferramenta"}
+        </span>
+        <span className="font-mono text-xs text-fg">{item.name}</span>
+        {item.result?.isError && (
+          <span className="ml-auto text-[11px] font-medium text-fg-muted">falhou</span>
+        )}
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-line px-4 py-3">
+          <Labeled label="Entrada">
+            <Code value={item.input} />
+          </Labeled>
+          {item.result && (
+            <Labeled label={item.result.isError ? "Erro" : "Resultado"}>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-elev p-2.5 font-mono text-[11px] leading-relaxed text-fg">
+                {item.result.text || "—"}
+              </pre>
+            </Labeled>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-fg-faint">
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Code({ value }: { value: unknown }) {
+  const text =
+    typeof value === "string" ? value : JSON.stringify(value, null, 2) || "—";
+  return (
+    <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-elev p-2.5 font-mono text-[11px] leading-relaxed text-fg">
+      {text}
+    </pre>
+  );
+}
+
+function Pending() {
+  return (
+    <div className="flex items-center gap-2 pl-1 text-[11px] text-fg-faint">
+      <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
+      O agente está respondendo…
+    </div>
+  );
+}
+
+function Composer({
+  value,
+  onChange,
+  onSend,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSend: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="glass shrink-0 border-t border-line px-6 py-4">
+      <div className="mx-auto flex max-w-3xl items-end gap-2">
+        <button
+          type="button"
+          disabled
+          title="Anexar arquivo — em breve"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-line text-fg-faint"
+        >
+          <Paperclip className="h-4 w-4" strokeWidth={1.5} />
+        </button>
+        <button
+          type="button"
+          disabled
+          title="Gravar áudio — em breve"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-line text-fg-faint"
+        >
+          <Mic className="h-4 w-4" strokeWidth={1.5} />
+        </button>
+        <div className="flex flex-1 items-end gap-2 rounded-2xl border border-line bg-surface px-3 py-1.5 shadow-card focus-within:border-black/[0.25]">
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSend();
+              }
+            }}
+            rows={1}
+            placeholder="Mande uma mensagem… (Enter envia, Shift+Enter quebra linha)"
+            className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-sm leading-relaxed text-fg placeholder:text-fg-faint focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={onSend}
+            disabled={disabled || !value.trim()}
+            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-bg text-accent-fg transition duration-150 hover:bg-black active:scale-95 disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            {disabled ? (
+              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
+            ) : (
+              <ArrowUp className="h-4 w-4" strokeWidth={2} />
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Reconstrói os itens do chat a partir do histórico, mesclando tool_result. */
+function buildItemsFromPersisted(events: PersistedEvent[]): ChatItem[] {
+  const items: ChatItem[] = [];
+  const toolById = new Map<string, ToolItem>();
+  for (const e of events) {
+    const d = e.payload as Record<string, unknown>;
+    switch (e.type) {
+      case "user.message":
+        items.push({ kind: "user", id: `p${e.seq}`, text: String(d.text ?? "") });
+        break;
+      case "agent.message":
+        items.push({ kind: "agent", id: `p${e.seq}`, text: String(d.text ?? "") });
+        break;
+      case "agent.thinking":
+        items.push({ kind: "thinking", id: `p${e.seq}` });
+        break;
+      case "agent.tool_use":
+      case "agent.custom_tool_use": {
+        const tool: ToolItem = {
+          kind: "tool",
+          id: String(d.id ?? `p${e.seq}`),
+          name: String(d.name ?? "tool"),
+          input: d.input,
+          custom: e.type === "agent.custom_tool_use",
+        };
+        toolById.set(tool.id, tool);
+        items.push(tool);
+        break;
+      }
+      case "agent.tool_result": {
+        const tool = toolById.get(String(d.toolUseId));
+        if (tool)
+          tool.result = { text: String(d.text ?? ""), isError: Boolean(d.isError) };
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return items;
+}

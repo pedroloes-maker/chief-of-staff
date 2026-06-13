@@ -9,6 +9,13 @@ import {
   listActiveWorkspaces,
   ValidationError,
 } from "./routes/workspaces";
+import {
+  createSession,
+  getSession,
+  listSessionEvents,
+  listSessions,
+  streamMessage,
+} from "./routes/sessions";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -85,6 +92,46 @@ async function handle(req: Request): Promise<Response> {
     if (archive && req.method === "POST") {
       await archiveWorkspace(archive[1]);
       return Response.json({ ok: true });
+    }
+
+    // GET/POST /api/workspaces/by-slug/:slug/sessions
+    const wsSessions = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/sessions$/,
+    );
+    if (wsSessions && req.method === "GET") {
+      return Response.json(await listSessions(wsSessions[1]));
+    }
+    if (wsSessions && req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { title?: string };
+      const created = await createSession(wsSessions[1], body, auth);
+      return Response.json(created, { status: 201 });
+    }
+
+    // GET /api/sessions/:id/events  (histórico renderável pra reload)
+    const sessionEventsMatch = url.pathname.match(
+      /^\/api\/sessions\/([^/]+)\/events$/,
+    );
+    if (sessionEventsMatch && req.method === "GET") {
+      return Response.json(await listSessionEvents(sessionEventsMatch[1]));
+    }
+
+    // POST /api/sessions/:id/messages  (manda mensagem, devolve SSE stream)
+    const sessionMessages = url.pathname.match(
+      /^\/api\/sessions\/([^/]+)\/messages$/,
+    );
+    if (sessionMessages && req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { text?: string };
+      return streamMessage(sessionMessages[1], body.text ?? "", req.signal);
+    }
+
+    // GET /api/sessions/:id
+    const sessionDetail = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
+    if (sessionDetail && req.method === "GET") {
+      const s = await getSession(sessionDetail[1]);
+      if (!s) {
+        return Response.json({ error: "session não encontrada" }, { status: 404 });
+      }
+      return Response.json(s);
     }
 
     return new Response("not found", { status: 404 });

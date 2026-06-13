@@ -2,6 +2,7 @@ import { UserButton } from "@clerk/react";
 import {
   Home,
   MessagesSquare,
+  History,
   Bot,
   Brain,
   Wrench,
@@ -10,23 +11,47 @@ import {
   Settings,
   Briefcase,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
+import type { ComponentType, ReactNode } from "react";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useWorkspaces } from "../../lib/api";
 import BrandMark from "../ui/BrandMark";
 
-const navItems = [
-  { label: "Início", icon: Home, href: "/" },
-  { label: "Chat", icon: MessagesSquare, href: "/chat" },
-  { label: "Agentes", icon: Bot, href: "/agents" },
-  { label: "Memória", icon: Brain, href: "/memory" },
-  { label: "Skills", icon: Wrench, href: "/skills" },
-  { label: "Conexões", icon: Plug, href: "/connections" },
-  { label: "Cofre", icon: Database, href: "/vault" },
-  { label: "Configurações", icon: Settings, href: "/settings" },
+// AppShell envolve <Routes>, então useParams aqui não enxerga :slug.
+// Derivamos o workspace ativo do pathname (/w/:slug/...).
+function useActiveSlug(): string | undefined {
+  const { pathname } = useLocation();
+  return pathname.match(/^\/w\/([^/]+)/)?.[1];
+}
+
+type NavItem = {
+  label: string;
+  icon: ComponentType<{ className?: string; strokeWidth?: number }>;
+  path: string;
+  enabled: boolean;
+};
+
+// Itens workspace-scoped: o href vira /w/:slug<path>. enabled=false são
+// próximos tickets — aparecem como "em breve" pra não cair em 404.
+const scopedItems: NavItem[] = [
+  { label: "Chat", icon: MessagesSquare, path: "/chat", enabled: true },
+  { label: "Sessões", icon: History, path: "/sessions", enabled: true },
+  { label: "Agentes", icon: Bot, path: "/agents", enabled: false },
+  { label: "Memória", icon: Brain, path: "/memory", enabled: false },
+  { label: "Skills", icon: Wrench, path: "/skills", enabled: false },
+  { label: "Conexões", icon: Plug, path: "/connections", enabled: false },
+  { label: "Cofre", icon: Database, path: "/vault", enabled: false },
+  { label: "Configurações", icon: Settings, path: "/settings", enabled: false },
 ];
 
+const linkClass = ({ isActive }: { isActive: boolean }) =>
+  `flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-colors duration-150 ${
+    isActive
+      ? "bg-accent-bg text-accent-fg shadow-card"
+      : "text-fg-muted hover:bg-black/[0.05] hover:text-fg"
+  }`;
+
 export default function AppShell({ children }: { children: ReactNode }) {
+  const slug = useActiveSlug();
   return (
     <div className="flex h-screen w-full bg-base text-fg">
       <aside className="glass z-10 flex w-64 flex-col border-r border-line">
@@ -38,23 +63,39 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-3">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.href}
-              to={item.href}
-              end={item.href === "/"}
-              className={({ isActive }) =>
-                `flex items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-colors duration-150 ${
-                  isActive
-                    ? "bg-accent-bg text-accent-fg shadow-card"
-                    : "text-fg-muted hover:bg-black/[0.05] hover:text-fg"
-                }`
-              }
-            >
-              <item.icon className="h-4 w-4" strokeWidth={1.5} />
-              {item.label}
-            </NavLink>
-          ))}
+          <NavLink to="/" end className={linkClass}>
+            <Home className="h-4 w-4" strokeWidth={1.5} />
+            Início
+          </NavLink>
+          {scopedItems.map((item) => {
+            const active = item.enabled && slug;
+            if (!active) {
+              return (
+                <div
+                  key={item.path}
+                  title={
+                    item.enabled
+                      ? "Selecione um workspace"
+                      : "Em breve"
+                  }
+                  className="flex cursor-not-allowed items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium text-fg-faint"
+                >
+                  <item.icon className="h-4 w-4" strokeWidth={1.5} />
+                  {item.label}
+                </div>
+              );
+            }
+            return (
+              <NavLink
+                key={item.path}
+                to={`/w/${slug}${item.path}`}
+                className={linkClass}
+              >
+                <item.icon className="h-4 w-4" strokeWidth={1.5} />
+                {item.label}
+              </NavLink>
+            );
+          })}
         </nav>
         <div className="px-5 py-4 text-[11px] text-fg-faint">Fase 1 · local</div>
       </aside>
@@ -68,7 +109,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 }
 
 function TopBar() {
-  const { slug } = useParams<{ slug: string }>();
+  const slug = useActiveSlug();
   return (
     <header className="glass z-10 flex h-16 shrink-0 items-center justify-between border-b border-line px-8">
       {slug ? (
