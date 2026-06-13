@@ -132,18 +132,15 @@ export default function VaultPage() {
                             {c.mcpServerUrl}
                           </p>
                         )}
-                        <p className="mt-0.5 text-[11px] text-fg-muted">
-                          {c.scope && <>escopo: {c.scope}</>}
-                          {c.expiresAt && (
-                            <>
-                              {c.scope ? " · " : ""}expira{" "}
-                              {new Date(c.expiresAt).toLocaleString("pt-BR", {
-                                dateStyle: "short",
-                                timeStyle: "short",
-                              })}
-                            </>
-                          )}
-                        </p>
+                        {c.expiresAt && (
+                          <p className="mt-0.5 text-[11px] text-fg-muted">
+                            expira{" "}
+                            {new Date(c.expiresAt).toLocaleString("pt-BR", {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            })}
+                          </p>
+                        )}
                       </div>
                       {!archived && (
                         <button
