@@ -28,6 +28,7 @@ type ToolItem = {
   name: string;
   input: unknown;
   custom: boolean;
+  mcpServer?: string; // set quando é uma tool de servidor MCP
   result?: { text: string; isError: boolean };
 };
 
@@ -137,6 +138,7 @@ export default function ChatPage() {
         break;
       case "agent.tool_use":
       case "agent.custom_tool_use":
+      case "agent.mcp_tool_use":
         setItems((prev) => [
           ...prev,
           {
@@ -145,10 +147,13 @@ export default function ChatPage() {
             name: String(d.name ?? "tool"),
             input: d.input,
             custom: event === "agent.custom_tool_use",
+            mcpServer:
+              event === "agent.mcp_tool_use" ? String(d.mcpServer ?? "") : undefined,
           },
         ]);
         break;
       case "agent.tool_result":
+      case "agent.mcp_tool_result":
         setItems((prev) =>
           prev.map((it) =>
             it.kind === "tool" && it.id === String(d.toolUseId)
@@ -374,7 +379,12 @@ function Item({ item }: { item: ChatItem }) {
 }
 
 function ToolCard({ item }: { item: ToolItem }) {
-  const [open, setOpen] = useState(item.custom);
+  const [open, setOpen] = useState(item.custom || !!item.mcpServer);
+  const label = item.mcpServer
+    ? `MCP · ${item.mcpServer}`
+    : item.custom
+      ? "Ação do builder"
+      : "Ferramenta";
   return (
     <div className="rounded-xl border border-line bg-surface shadow-card">
       <button
@@ -388,7 +398,7 @@ function ToolCard({ item }: { item: ToolItem }) {
         />
         <Wrench className="h-3.5 w-3.5 text-fg-muted" strokeWidth={1.5} />
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-faint">
-          {item.custom ? "Ação do builder" : "Ferramenta"}
+          {label}
         </span>
         <span className="font-mono text-xs text-fg">{item.name}</span>
         {item.result?.isError && (
@@ -525,19 +535,23 @@ function buildItemsFromPersisted(events: PersistedEvent[]): ChatItem[] {
         items.push({ kind: "thinking", id: `p${e.seq}` });
         break;
       case "agent.tool_use":
-      case "agent.custom_tool_use": {
+      case "agent.custom_tool_use":
+      case "agent.mcp_tool_use": {
         const tool: ToolItem = {
           kind: "tool",
           id: String(d.id ?? `p${e.seq}`),
           name: String(d.name ?? "tool"),
           input: d.input,
           custom: e.type === "agent.custom_tool_use",
+          mcpServer:
+            e.type === "agent.mcp_tool_use" ? String(d.mcpServer ?? "") : undefined,
         };
         toolById.set(tool.id, tool);
         items.push(tool);
         break;
       }
-      case "agent.tool_result": {
+      case "agent.tool_result":
+      case "agent.mcp_tool_result": {
         const tool = toolById.get(String(d.toolUseId));
         if (tool)
           tool.result = { text: String(d.text ?? ""), isError: Boolean(d.isError) };

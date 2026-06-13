@@ -336,3 +336,31 @@ export const modelPricing = pgTable("model_pricing", {
 
 export type ModelPricing = typeof modelPricing.$inferSelect;
 export type NewModelPricing = typeof modelPricing.$inferInsert;
+
+// Segredos por workspace, encriptados at-rest (AES-GCM, lib/crypto). Genérico
+// por design — key identifica o segredo (ex. `sma_mcp_bearer` atual,
+// `sma_mcp_bearer_prev` na janela de graça de rotação, `sma_mcp_vault_id`).
+// expiresAt (nullable) dá validade a segredos rotacionados-pra-fora.
+export const secretEntries = pgTable(
+  "secret_entries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    valueEncrypted: text("value_encrypted").notNull(),
+    expiresAt: timestamp("expires_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    workspaceKeyIdx: uniqueIndex("secret_entries_workspace_key_idx").on(
+      t.workspaceId,
+      t.key,
+    ),
+  }),
+);
+
+export type SecretEntry = typeof secretEntries.$inferSelect;
+export type NewSecretEntry = typeof secretEntries.$inferInsert;

@@ -9,6 +9,7 @@ import {
   workspaces,
 } from "../db/schema";
 import { decryptSecret } from "../lib/crypto";
+import { getSecret, MCP_VAULT_ID_KEY } from "../lib/secrets";
 import { priceUsage, type TokenUsage } from "../lib/pricing";
 import type { AuthContext } from "../lib/auth";
 import { ValidationError } from "./workspaces";
@@ -131,11 +132,16 @@ export async function createSession(
   const apiKey = await decryptSecret(ws.anthropicApiKeyEncrypted);
   const client = clientFor(apiKey);
 
+  // Anexa a vault do MCP `sma` (se provisionada) pra Anthropic encaminhar o
+  // bearer ao nosso endpoint quando o agente chamar a tool.
+  const smaVaultId = await getSecret(ws.id, MCP_VAULT_ID_KEY);
+
   // Anthropic-first.
   const created = await client.beta.sessions.create({
     agent: agent.anthropicAgentId,
     environment_id: ws.defaultEnvironmentId,
     title: input.title?.trim() || null,
+    ...(smaVaultId ? { vault_ids: [smaVaultId] } : {}),
   });
 
   const [row] = await db
@@ -191,6 +197,8 @@ const RENDERABLE = new Set([
   "agent.tool_use",
   "agent.tool_result",
   "agent.custom_tool_use",
+  "agent.mcp_tool_use",
+  "agent.mcp_tool_result",
 ]);
 
 type NormalizedEvent = { type: string; data: Record<string, unknown> };
@@ -220,12 +228,32 @@ function normalize(ev: Record<string, unknown>): NormalizedEvent | null {
     case "agent.tool_use":
     case "agent.custom_tool_use":
       return { type, data: { id: ev.id, name: ev.name, input: ev.input } };
+    case "agent.mcp_tool_use":
+      return {
+        type,
+        data: {
+          id: ev.id,
+          name: ev.name,
+          input: ev.input,
+          mcpServer: ev.mcp_server_name,
+        },
+      };
     case "agent.tool_result":
       return {
         type,
         data: {
           id: ev.id,
           toolUseId: ev.tool_use_id,
+          isError: ev.is_error ?? false,
+          text: textOf(ev.content as Array<{ type: string; text?: string }>),
+        },
+      };
+    case "agent.mcp_tool_result":
+      return {
+        type,
+        data: {
+          id: ev.id,
+          toolUseId: ev.mcp_tool_use_id,
           isError: ev.is_error ?? false,
           text: textOf(ev.content as Array<{ type: string; text?: string }>),
         },
