@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 export type Workspace = {
   id: string;
@@ -15,6 +15,25 @@ export type ConnectWorkspaceInput = {
   displayName: string;
   anthropicApiKey: string;
 };
+
+export type SessionView = {
+  id: string;
+  anthropicSessionId: string;
+  title: string | null;
+  source: "web" | "whatsapp" | "job";
+  status: "rescheduling" | "running" | "idle" | "terminated";
+  model: string | null;
+  usdEstimate: number;
+  inputTokens: number;
+  outputTokens: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PersistedEvent = { seq: number; type: string; payload: unknown };
+
+/** Um evento SSE do stream de mensagem: `event:` + `data:` (JSON). */
+export type StreamHandler = (event: string, data: unknown) => void;
 
 function buildHeaders(token: string | null): HeadersInit {
   const headers: HeadersInit = { "content-type": "application/json" };
@@ -49,20 +68,77 @@ export function useApi() {
     [getToken],
   );
 
-  return {
-    listWorkspaces: () => request<Workspace[]>("/api/workspaces"),
-    connectWorkspace: (input: ConnectWorkspaceInput) =>
-      request<Workspace>("/api/workspaces", {
+  // Manda uma mensagem e consome o stream SSE da resposta. EventSource não
+  // deixa setar Authorization, então usamos fetch + reader e parseamos os
+  // frames `event:`/`data:` na mão. Resolve quando o stream fecha.
+  const streamMessage = useCallback(
+    async (
+      sessionId: string,
+      text: string,
+      onEvent: StreamHandler,
+      signal?: AbortSignal,
+    ): Promise<void> => {
+      const token = await getToken();
+      const res = await fetch(`/api/sessions/${sessionId}/messages`, {
         method: "POST",
-        body: JSON.stringify(input),
-      }),
-    archiveWorkspace: (id: string) =>
-      request<{ ok: true }>(`/api/workspaces/${id}/archive`, {
-        method: "POST",
-      }),
-    getWorkspaceBySlug: (slug: string) =>
-      request<Workspace>(`/api/workspaces/by-slug/${slug}`),
-  };
+        headers: buildHeaders(token),
+        body: JSON.stringify({ text }),
+        signal,
+      });
+      if (!res.ok || !res.body) await parseError(res);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          let event = "message";
+          let data = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event: ")) event = line.slice(7);
+            else if (line.startsWith("data: ")) data += line.slice(6);
+          }
+          if (data) onEvent(event, JSON.parse(data));
+        }
+      }
+    },
+    [getToken],
+  );
+
+  // Memoizado por (request, streamMessage) — ambos estáveis — pra que o objeto
+  // retornado tenha identidade estável e não dispare loops em efeitos que
+  // dependem dele (ex. useWorkspaces.refetch).
+  return useMemo(
+    () => ({
+      listWorkspaces: () => request<Workspace[]>("/api/workspaces"),
+      connectWorkspace: (input: ConnectWorkspaceInput) =>
+        request<Workspace>("/api/workspaces", {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      archiveWorkspace: (id: string) =>
+        request<{ ok: true }>(`/api/workspaces/${id}/archive`, {
+          method: "POST",
+        }),
+      getWorkspaceBySlug: (slug: string) =>
+        request<Workspace>(`/api/workspaces/by-slug/${slug}`),
+      listSessions: (slug: string) =>
+        request<SessionView[]>(`/api/workspaces/by-slug/${slug}/sessions`),
+      createSession: (slug: string, title?: string) =>
+        request<SessionView>(`/api/workspaces/by-slug/${slug}/sessions`, {
+          method: "POST",
+          body: JSON.stringify({ title }),
+        }),
+      getSessionEvents: (sessionId: string) =>
+        request<PersistedEvent[]>(`/api/sessions/${sessionId}/events`),
+      streamMessage,
+    }),
+    [request, streamMessage],
+  );
 }
 
 /** Hook simples pra listar workspaces ativos com refetch. */
