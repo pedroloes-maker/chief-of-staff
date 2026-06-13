@@ -281,7 +281,7 @@ function CreateSubAgentModal({
             <input
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="claude-opus-4-7"
+              placeholder="claude-haiku-4-5 (default)"
               className="mt-1.5 w-full rounded-xl border border-line bg-surface px-4 py-2.5 font-mono text-sm text-fg outline-none transition focus:border-line-strong"
             />
           </label>
