@@ -35,6 +35,7 @@ import {
   handleGoogleCallback,
   startGoogleConnect,
 } from "./routes/connections";
+import { archiveVaultCredential, listWorkspaceVaults } from "./routes/vaults";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -199,6 +200,24 @@ async function handle(req: Request): Promise<Response> {
       req.method === "POST"
     ) {
       return disconnectGoogle(req);
+    }
+
+    // GET /api/workspaces/by-slug/:slug/vaults  (cofre: vaults + credentials)
+    const wsVaults = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/vaults$/,
+    );
+    if (wsVaults && req.method === "GET") {
+      return Response.json(await listWorkspaceVaults(wsVaults[1]));
+    }
+
+    // POST /api/workspaces/by-slug/:slug/vaults/:vid/credentials/:cid/archive
+    const credArchive = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/vaults\/([^/]+)\/credentials\/([^/]+)\/archive$/,
+    );
+    if (credArchive && req.method === "POST") {
+      return Response.json(
+        await archiveVaultCredential(credArchive[1], credArchive[2], credArchive[3]),
+      );
     }
 
     // POST /api/workspaces/by-slug/:slug/agents/sync  (reconcilia com Anthropic)
