@@ -22,9 +22,10 @@ const ROLE_ORDER: Record<Role, number> = {
   sub_agent: 2,
 };
 
-// Modelo default pra sub-agentes criados pela UI (mesmo das famílias usadas no
-// provision-workspace). Editável no detalhe depois.
-const DEFAULT_SUBAGENT_MODEL = "claude-opus-4-7";
+// Modelo default pra sub-agentes criados pela UI. Haiku: sub-agentes fazem
+// tarefas-folha leves, então nascem baratos (~15× mais barato que Opus).
+// Editável no detalhe depois.
+const DEFAULT_SUBAGENT_MODEL = "claude-haiku-4-5";
 
 export type AgentSummary = {
   id: string;

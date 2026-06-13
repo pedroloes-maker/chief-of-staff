@@ -169,6 +169,8 @@ export function useApi() {
         request<Workspace>(`/api/workspaces/by-slug/${slug}`),
       listSessions: (slug: string) =>
         request<SessionView[]>(`/api/workspaces/by-slug/${slug}/sessions`),
+      getSession: (sessionId: string) =>
+        request<SessionView>(`/api/sessions/${sessionId}`),
       createSession: (slug: string, title?: string) =>
         request<SessionView>(`/api/workspaces/by-slug/${slug}/sessions`, {
           method: "POST",
