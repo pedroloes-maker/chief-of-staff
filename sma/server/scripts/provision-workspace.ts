@@ -50,11 +50,12 @@ function makeLogger(): Log {
   };
 }
 
-function parseArgs(): { workspaceSlug: string } {
-  const arg = process.argv.slice(2).find((a) => a.startsWith("--workspace="));
+function parseArgs(): { workspaceSlug: string; reconcile: boolean } {
+  const args = process.argv.slice(2);
+  const arg = args.find((a) => a.startsWith("--workspace="));
   if (!arg) {
     console.error(
-      "Erro: --workspace=<slug> é obrigatório.\n  uso: bun run scripts/provision-workspace.ts --workspace=<slug>",
+      "Erro: --workspace=<slug> é obrigatório.\n  uso: bun run scripts/provision-workspace.ts --workspace=<slug> [--reconcile]",
     );
     process.exit(1);
   }
@@ -63,7 +64,10 @@ function parseArgs(): { workspaceSlug: string } {
     console.error("Erro: --workspace=<slug> não pode ser vazio.");
     process.exit(1);
   }
-  return { workspaceSlug: slug };
+  // --reconcile atualiza a config de agents que já existem (tools, skills,
+  // system, etc.) via agents.update, em vez de só pular. Use quando a config
+  // do agent mudou (ex. adicionar o agent_toolset).
+  return { workspaceSlug: slug, reconcile: args.includes("--reconcile") };
 }
 
 async function loadWorkspace(slug: string) {
@@ -188,6 +192,7 @@ async function ensureAgent(
   workspaceId: string,
   input: AgentCreateInput,
   log: Log,
+  reconcile: boolean,
 ): Promise<{ rowId: string; anthropicId: string; version: number }> {
   const [existing] = await db
     .select()
@@ -195,14 +200,41 @@ async function ensureAgent(
     .where(and(eq(agents.workspaceId, workspaceId), eq(agents.slug, input.slug)));
 
   if (existing) {
-    log("reused", `agent ${input.slug} (${existing.anthropicAgentId})`);
-    // Não atualizamos automaticamente no SMA-8 — iteração de prompt/tools
-    // acontece via /chat na Fase 1 (build sub-agent o faz). Provisão é
-    // só pra garantir presença.
+    if (!reconcile) {
+      // Por padrão não atualizamos — iteração de prompt/tools acontece via
+      // /chat na Fase 1 (builder sub-agent o faz). Provisão garante presença.
+      log("reused", `agent ${input.slug} (${existing.anthropicAgentId})`);
+      return {
+        rowId: existing.id,
+        anthropicId: existing.anthropicAgentId,
+        version: existing.version ? Number(existing.version) : 1,
+      };
+    }
+    // --reconcile: traz a config do agent existente pro estado desejado.
+    // Pega a versão atual da Anthropic pra evitar conflito de concorrência.
+    const current = await client.beta.agents.retrieve(existing.anthropicAgentId);
+    const updated = await client.beta.agents.update(existing.anthropicAgentId, {
+      version: current.version,
+      model: input.model,
+      system: input.system,
+      tools: input.tools,
+      mcp_servers: input.mcpServers,
+      skills: input.skills,
+      multiagent: input.multiagent,
+    });
+    await db
+      .update(agents)
+      .set({
+        version: String(updated.version),
+        model: input.model,
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, existing.id));
+    log("created", `agent ${input.slug} reconciliado → v${updated.version}`);
     return {
       rowId: existing.id,
       anthropicId: existing.anthropicAgentId,
-      version: existing.version ? Number(existing.version) : 1,
+      version: updated.version,
     };
   }
 
@@ -294,9 +326,17 @@ async function ensureJob(
   log("created", `job ${slug} (cron: ${cronExpr})`);
 }
 
+// Toolset padrão (read/write/edit/glob/grep/bash). Skills — built-in ou custom
+// — exigem o `read` tool habilitado neste toolset, senão a criação da session
+// é rejeitada pela Anthropic. Tanto orchestrator quanto builder precisam dele.
+const AGENT_TOOLSET: Anthropic.Beta.Agents.AgentCreateParams["tools"] = [
+  { type: "agent_toolset_20260401" },
+];
+
 async function main(): Promise<void> {
-  const { workspaceSlug } = parseArgs();
+  const { workspaceSlug, reconcile } = parseArgs();
   const log = makeLogger();
+  if (reconcile) log("info", "modo --reconcile: agents existentes serão atualizados");
 
   console.log(`\n→ Provisionando workspace '${workspaceSlug}'\n`);
 
@@ -355,7 +395,9 @@ async function main(): Promise<void> {
       role: "builder",
       model: BUILDER_MODEL,
       system: BUILDER_SYSTEM_PROMPT,
-      tools: BUILDER_CUSTOM_TOOLS,
+      // agent_toolset (file tools que as skills exigem, §8.2 do PRD) +
+      // custom control-plane tools.
+      tools: [...(AGENT_TOOLSET ?? []), ...(BUILDER_CUSTOM_TOOLS ?? [])],
       skills: [
         {
           type: "custom",
@@ -370,6 +412,7 @@ async function main(): Promise<void> {
       ],
     },
     log,
+    reconcile,
   );
 
   // 4. Orchestrator agent (multiagent: builder; MCP: sma; built-in skills).
@@ -401,15 +444,20 @@ async function main(): Promise<void> {
       mcpServers: smaMcpUrl
         ? [{ name: "sma", type: "url", url: smaMcpUrl }]
         : undefined,
-      tools: smaMcpUrl
-        ? [
-            {
-              type: "mcp_toolset",
-              mcp_server_name: "sma",
-              default_config: { enabled: true },
-            },
-          ]
-        : undefined,
+      // agent_toolset (read/write/etc. que as built-in skills exigem) + o
+      // mcp_toolset do `sma` quando exposto publicamente.
+      tools: [
+        ...(AGENT_TOOLSET ?? []),
+        ...(smaMcpUrl
+          ? [
+              {
+                type: "mcp_toolset" as const,
+                mcp_server_name: "sma",
+                default_config: { enabled: true },
+              },
+            ]
+          : []),
+      ],
       skills: BUILTIN_SKILLS_ORCHESTRATOR.map((s) => ({
         type: "anthropic",
         skill_id: s.skill_id,
@@ -420,6 +468,7 @@ async function main(): Promise<void> {
       },
     },
     log,
+    reconcile,
   );
 
   // 5. Links memory ↔ agent (builder = RW em todas; orchestrator = RW em
