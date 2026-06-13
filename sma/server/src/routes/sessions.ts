@@ -197,6 +197,8 @@ const RENDERABLE = new Set([
   "agent.tool_use",
   "agent.tool_result",
   "agent.custom_tool_use",
+  "agent.mcp_tool_use",
+  "agent.mcp_tool_result",
 ]);
 
 type NormalizedEvent = { type: string; data: Record<string, unknown> };
@@ -226,12 +228,32 @@ function normalize(ev: Record<string, unknown>): NormalizedEvent | null {
     case "agent.tool_use":
     case "agent.custom_tool_use":
       return { type, data: { id: ev.id, name: ev.name, input: ev.input } };
+    case "agent.mcp_tool_use":
+      return {
+        type,
+        data: {
+          id: ev.id,
+          name: ev.name,
+          input: ev.input,
+          mcpServer: ev.mcp_server_name,
+        },
+      };
     case "agent.tool_result":
       return {
         type,
         data: {
           id: ev.id,
           toolUseId: ev.tool_use_id,
+          isError: ev.is_error ?? false,
+          text: textOf(ev.content as Array<{ type: string; text?: string }>),
+        },
+      };
+    case "agent.mcp_tool_result":
+      return {
+        type,
+        data: {
+          id: ev.id,
+          toolUseId: ev.mcp_tool_use_id,
           isError: ev.is_error ?? false,
           text: textOf(ev.content as Array<{ type: string; text?: string }>),
         },

@@ -459,7 +459,13 @@ async function main(): Promise<void> {
               {
                 type: "mcp_toolset" as const,
                 mcp_server_name: "sma",
-                default_config: { enabled: true },
+                // always_allow: o default do mcp_toolset é always_ask, que sem
+                // UI de confirmação (Fase 1) trava a tool. Liberamos pra o
+                // orchestrator usar a tool direto.
+                default_config: {
+                  enabled: true,
+                  permission_policy: { type: "always_allow" as const },
+                },
               },
             ]
           : []),
