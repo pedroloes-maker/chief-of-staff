@@ -16,6 +16,14 @@ import {
   listSessions,
   streamMessage,
 } from "./routes/sessions";
+import {
+  archiveAgent,
+  createSubAgent,
+  getAgentDetail,
+  listAgents,
+  syncAgents,
+  updateAgent,
+} from "./routes/agents";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -132,6 +140,59 @@ async function handle(req: Request): Promise<Response> {
         return Response.json({ error: "session não encontrada" }, { status: 404 });
       }
       return Response.json(s);
+    }
+
+    // POST /api/workspaces/by-slug/:slug/agents/sync  (reconcilia com Anthropic)
+    const agentsSync = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/agents\/sync$/,
+    );
+    if (agentsSync && req.method === "POST") {
+      return Response.json(await syncAgents(agentsSync[1]));
+    }
+
+    // GET/POST /api/workspaces/by-slug/:slug/agents
+    const wsAgents = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/agents$/,
+    );
+    if (wsAgents && req.method === "GET") {
+      return Response.json(await listAgents(wsAgents[1]));
+    }
+    if (wsAgents && req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as {
+        name?: string;
+        system?: string;
+        model?: string;
+      };
+      const created = await createSubAgent(wsAgents[1], {
+        name: body.name ?? "",
+        system: body.system,
+        model: body.model,
+      });
+      return Response.json(created, { status: 201 });
+    }
+
+    // POST /api/agents/:id/archive
+    const agentArchive = url.pathname.match(/^\/api\/agents\/([^/]+)\/archive$/);
+    if (agentArchive && req.method === "POST") {
+      return Response.json(await archiveAgent(agentArchive[1]));
+    }
+
+    // GET/POST /api/agents/:id  (detalhe ao vivo / edição Anthropic-first)
+    const agentDetail = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
+    if (agentDetail && req.method === "GET") {
+      const a = await getAgentDetail(agentDetail[1]);
+      if (!a) {
+        return Response.json({ error: "agente não encontrado" }, { status: 404 });
+      }
+      return Response.json(a);
+    }
+    if (agentDetail && req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as {
+        system?: string | null;
+        model?: string;
+        roster?: string[];
+      };
+      return Response.json(await updateAgent(agentDetail[1], body));
     }
 
     return new Response("not found", { status: 404 });
