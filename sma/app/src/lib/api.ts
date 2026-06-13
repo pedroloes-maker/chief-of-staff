@@ -23,6 +23,7 @@ export type SessionView = {
   source: "web" | "whatsapp" | "job";
   status: "rescheduling" | "running" | "idle" | "terminated";
   model: string | null;
+  agentId: string | null;
   usdEstimate: number;
   inputTokens: number;
   outputTokens: number;
@@ -171,10 +172,13 @@ export function useApi() {
         request<SessionView[]>(`/api/workspaces/by-slug/${slug}/sessions`),
       getSession: (sessionId: string) =>
         request<SessionView>(`/api/sessions/${sessionId}`),
-      createSession: (slug: string, title?: string) =>
+      createSession: (
+        slug: string,
+        input?: { title?: string; agentId?: string },
+      ) =>
         request<SessionView>(`/api/workspaces/by-slug/${slug}/sessions`, {
           method: "POST",
-          body: JSON.stringify({ title }),
+          body: JSON.stringify(input ?? {}),
         }),
       getSessionEvents: (sessionId: string) =>
         request<PersistedEvent[]>(`/api/sessions/${sessionId}/events`),
