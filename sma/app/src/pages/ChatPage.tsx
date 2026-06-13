@@ -8,7 +8,7 @@ import {
   Paperclip,
   Wrench,
 } from "lucide-react";
-import { useApi, type PersistedEvent } from "../lib/api";
+import { useApi, type PersistedEvent, type SessionView } from "../lib/api";
 
 type ToolItem = {
   kind: "tool";
@@ -46,17 +46,31 @@ export default function ChatPage() {
   const [sessionId, setSessionId] = useState<string | null>(
     searchParams.get("session"),
   );
+  const [session, setSession] = useState<SessionView | null>(null);
   const [cost, setCost] = useState<CostSummary | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string | null>(sessionId);
   sessionIdRef.current = sessionId;
 
-  // Resume: se vier ?session=<id>, carrega o histórico renderável persistido.
+  // Resume: se vier ?session=<id>, carrega metadados (título/modelo/custo) e o
+  // histórico renderável persistido. O custo já aparece no topo sem precisar
+  // mandar mensagem (usa o usdEstimate acumulado da sessão).
   useEffect(() => {
     const resume = searchParams.get("session");
     if (!resume) return;
     setSessionId(resume);
+    void api
+      .getSession(resume)
+      .then((s) => {
+        setSession(s);
+        setCost({
+          usd: s.usdEstimate,
+          inputTokens: s.inputTokens,
+          outputTokens: s.outputTokens,
+        });
+      })
+      .catch(() => {});
     void api.getSessionEvents(resume).then((events) => {
       setItems(buildItemsFromPersisted(events));
     });
@@ -134,6 +148,7 @@ export default function ChatPage() {
         const created = await api.createSession(slug);
         id = created.id;
         setSessionId(id);
+        setSession(created);
       }
       await api.streamMessage(id, text, applyEvent);
     } catch (err) {
@@ -153,25 +168,20 @@ export default function ChatPage() {
   return (
     <div className="flex h-full flex-col">
       <header className="glass z-10 flex h-16 shrink-0 items-center justify-between border-b border-line px-8">
-        <div>
-          <h1 className="text-sm font-semibold tracking-tight text-fg">Chat</h1>
-          <p className="text-[11px] text-fg-muted">
-            Orchestrator · workspace <span className="font-mono">{slug}</span>
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold tracking-tight text-fg">
+            {session ? sessionLabel(session) : "Nova sessão"}
+          </h1>
+          <p className="truncate text-[11px] text-fg-muted">
+            {session?.model ? (
+              <span className="font-mono">{session.model}</span>
+            ) : (
+              <>orchestrator</>
+            )}{" "}
+            · workspace <span className="font-mono">{slug}</span>
           </p>
         </div>
-        {cost && (
-          <div className="rounded-full border border-line bg-surface px-3 py-1 text-[11px] text-fg-muted shadow-card">
-            {cost.inputTokens.toLocaleString("pt-BR")} in ·{" "}
-            {cost.outputTokens.toLocaleString("pt-BR")} out ·{" "}
-            <span className="font-medium text-fg">
-              {cost.usd.toLocaleString("pt-BR", {
-                style: "currency",
-                currency: "USD",
-                minimumFractionDigits: cost.usd < 0.01 ? 4 : 2,
-              })}
-            </span>
-          </div>
-        )}
+        <CostPill cost={cost} />
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -195,6 +205,37 @@ export default function ChatPage() {
         onSend={() => void send()}
         disabled={streaming}
       />
+    </div>
+  );
+}
+
+/** Título da sessão pro cabeçalho: usa o title, senão um id curto. */
+function sessionLabel(s: SessionView): string {
+  return s.title?.trim() || `Sessão ${s.id.slice(0, 8)}`;
+}
+
+/** Custo USD sempre visível no topo; tokens só quando há uso. */
+function CostPill({ cost }: { cost: CostSummary | null }) {
+  const usd = cost?.usd ?? 0;
+  const tin = cost?.inputTokens ?? 0;
+  const tout = cost?.outputTokens ?? 0;
+  return (
+    <div className="flex shrink-0 items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-[11px] text-fg-muted shadow-card">
+      {tin + tout > 0 && (
+        <span>
+          {tin.toLocaleString("pt-BR")} in · {tout.toLocaleString("pt-BR")} out
+        </span>
+      )}
+      <span className="font-medium text-fg">
+        {usd.toLocaleString("pt-BR", {
+          style: "currency",
+          currency: "USD",
+          // Custos de dev são frações de dólar — mostra 4 casas abaixo de US$ 1
+          // pra dar precisão; 2 casas pra zero (sessão nova) e valores ≥ US$ 1.
+          minimumFractionDigits: usd > 0 && usd < 1 ? 4 : 2,
+          maximumFractionDigits: usd > 0 && usd < 1 ? 4 : 2,
+        })}
+      </span>
     </div>
   );
 }

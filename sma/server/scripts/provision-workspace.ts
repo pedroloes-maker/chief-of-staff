@@ -31,8 +31,12 @@ import {
 } from "../src/provisioning/prompts";
 import { SMA_CUSTOM_SKILLS, type SkillSpec } from "../src/provisioning/skills";
 
-const BUILDER_MODEL = "claude-opus-4-7";
-const ORCHESTRATOR_MODEL = "claude-opus-4-7";
+// Fase 1: Sonnet pra orchestrator+builder mantém custo viável (~5× mais barato
+// que Opus) sem perder capacidade pro trabalho de raciocínio/config. Sub-agents
+// nascem em Haiku (ver DEFAULT_SUBAGENT_MODEL em routes/agents.ts). Revisar pra
+// Opus em produção se a qualidade exigir.
+const BUILDER_MODEL = "claude-sonnet-4-6";
+const ORCHESTRATOR_MODEL = "claude-sonnet-4-6";
 
 const BUILTIN_SKILLS_ORCHESTRATOR: { skill_id: "pdf" | "docx" | "xlsx" }[] = [
   { skill_id: "pdf" },
