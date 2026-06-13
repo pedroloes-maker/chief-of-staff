@@ -10,6 +10,7 @@ import ChatPage from "./pages/ChatPage";
 import SessionsPage from "./pages/SessionsPage";
 import AgentsPage from "./pages/AgentsPage";
 import AgentDetailPage from "./pages/AgentDetailPage";
+import ConnectionsPage from "./pages/ConnectionsPage";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/w/:slug/sessions" element={<SessionsPage />} />
             <Route path="/w/:slug/agents" element={<AgentsPage />} />
             <Route path="/w/:slug/agents/:id" element={<AgentDetailPage />} />
+            <Route path="/w/:slug/connections" element={<ConnectionsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </AppShell>

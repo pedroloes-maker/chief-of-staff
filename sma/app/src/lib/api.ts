@@ -72,6 +72,29 @@ export type UpdateAgentInput = {
   roster?: string[];
 };
 
+export type GoogleService = "gmail" | "drive" | "calendar";
+
+export type GoogleServiceStatus = {
+  service: GoogleService;
+  configured: boolean;
+  mcpServerUrl: string | null;
+  connected: boolean;
+  email: string | null;
+  level: string | null;
+  credentialId: string | null;
+  expiresAt: string | null;
+};
+
+export type GoogleStatus = {
+  vaultId: string | null;
+  services: GoogleServiceStatus[];
+};
+
+export type GoogleLevel = { id: string; label: string; description: string };
+export type GoogleCatalogue = {
+  services: Array<{ service: GoogleService; title: string; levels: GoogleLevel[] }>;
+};
+
 export type PersistedEvent = { seq: number; type: string; payload: unknown };
 
 /** Um evento SSE do stream de mensagem: `event:` + `data:` (JSON). */
@@ -206,6 +229,22 @@ export function useApi() {
         }),
       archiveAgent: (id: string) =>
         request<{ ok: true }>(`/api/agents/${id}/archive`, { method: "POST" }),
+      googleCatalogue: () =>
+        request<GoogleCatalogue>("/api/connections/google/catalogue"),
+      googleStatus: (slug: string) =>
+        request<GoogleStatus>(
+          `/api/connections/google?workspace=${encodeURIComponent(slug)}`,
+        ),
+      startGoogleConnect: (slug: string, service: GoogleService, level: string) =>
+        request<{ authUrl: string }>("/api/connections/google/start", {
+          method: "POST",
+          body: JSON.stringify({ workspace: slug, service, level }),
+        }),
+      disconnectGoogle: (slug: string, service: GoogleService) =>
+        request<{ ok: true }>("/api/connections/google/disconnect", {
+          method: "POST",
+          body: JSON.stringify({ workspace: slug, service }),
+        }),
     }),
     [request, streamMessage],
   );
