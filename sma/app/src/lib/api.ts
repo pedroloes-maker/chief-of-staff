@@ -30,6 +30,47 @@ export type SessionView = {
   updatedAt: string;
 };
 
+export type AgentRole = "orchestrator" | "builder" | "sub_agent";
+
+export type AgentSummary = {
+  id: string;
+  slug: string;
+  role: AgentRole;
+  anthropicAgentId: string;
+  version: string | null;
+  model: string | null;
+  status: "active" | "archived";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RosterMember = {
+  anthropicAgentId: string;
+  version: number;
+  slug: string | null;
+  role: AgentRole | null;
+};
+
+export type AgentDetail = AgentSummary & {
+  name: string;
+  description: string | null;
+  system: string | null;
+  liveModel: string | null;
+  liveVersion: number;
+  archivedAt: string | null;
+  tools: Array<{ kind: string; label: string }>;
+  skills: Array<{ type: string; skillId: string; version: string }>;
+  mcpServers: Array<{ name: string; url: string }>;
+  isCoordinator: boolean;
+  roster: RosterMember[];
+};
+
+export type UpdateAgentInput = {
+  system?: string | null;
+  model?: string;
+  roster?: string[];
+};
+
 export type PersistedEvent = { seq: number; type: string; payload: unknown };
 
 /** Um evento SSE do stream de mensagem: `event:` + `data:` (JSON). */
@@ -136,6 +177,29 @@ export function useApi() {
       getSessionEvents: (sessionId: string) =>
         request<PersistedEvent[]>(`/api/sessions/${sessionId}/events`),
       streamMessage,
+      listAgents: (slug: string) =>
+        request<AgentSummary[]>(`/api/workspaces/by-slug/${slug}/agents`),
+      createSubAgent: (
+        slug: string,
+        input: { name: string; system?: string; model?: string },
+      ) =>
+        request<AgentSummary>(`/api/workspaces/by-slug/${slug}/agents`, {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      syncAgents: (slug: string) =>
+        request<{ synced: number; created: number }>(
+          `/api/workspaces/by-slug/${slug}/agents/sync`,
+          { method: "POST" },
+        ),
+      getAgent: (id: string) => request<AgentDetail>(`/api/agents/${id}`),
+      updateAgent: (id: string, input: UpdateAgentInput) =>
+        request<AgentDetail>(`/api/agents/${id}`, {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      archiveAgent: (id: string) =>
+        request<{ ok: true }>(`/api/agents/${id}/archive`, { method: "POST" }),
     }),
     [request, streamMessage],
   );
