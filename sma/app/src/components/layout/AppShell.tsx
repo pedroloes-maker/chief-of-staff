@@ -38,7 +38,7 @@ const scopedItems: NavItem[] = [
   { label: "Agentes", icon: Bot, path: "/agents", enabled: true },
   { label: "Memória", icon: Brain, path: "/memory", enabled: false },
   { label: "Skills", icon: Wrench, path: "/skills", enabled: false },
-  { label: "Conexões", icon: Plug, path: "/connections", enabled: false },
+  { label: "Conexões", icon: Plug, path: "/connections", enabled: true },
   { label: "Cofre", icon: Database, path: "/vault", enabled: false },
   { label: "Configurações", icon: Settings, path: "/settings", enabled: false },
 ];

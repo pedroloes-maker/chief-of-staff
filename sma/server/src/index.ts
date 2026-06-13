@@ -25,6 +25,16 @@ import {
   updateAgent,
 } from "./routes/agents";
 import { handleSmaMcp } from "./routes/mcp-sma";
+import { gmailMcpHandler } from "./routes/mcp-gmail";
+import { driveMcpHandler } from "./routes/mcp-drive";
+import { calendarMcpHandler } from "./routes/mcp-calendar";
+import {
+  disconnectGoogle,
+  getCatalogue,
+  getGoogleStatus,
+  handleGoogleCallback,
+  startGoogleConnect,
+} from "./routes/connections";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -58,6 +68,21 @@ async function handle(req: Request): Promise<Response> {
   const smaMcp = url.pathname.match(/^\/api\/mcp\/sma\/([^/]+)$/);
   if (smaMcp) {
     return handleSmaMcp(req, smaMcp[1]);
+  }
+
+  // MCP servers Google (Gmail/Drive/Calendar) — também públicos. A Anthropic
+  // encaminha o bearer OAuth (da vault) e o handler chama a REST do Google.
+  if (url.pathname === "/mcp/gmail") return gmailMcpHandler(req);
+  if (url.pathname === "/mcp/drive") return driveMcpHandler(req);
+  if (url.pathname === "/mcp/calendar") return calendarMcpHandler(req);
+
+  // Callback OAuth do Google — PÚBLICO (a Google redireciona pra cá; sem Clerk).
+  // O workspace vem do state assinado. Devolve HTML que fecha o popup.
+  if (
+    url.pathname === "/api/connections/google/callback" &&
+    req.method === "GET"
+  ) {
+    return handleGoogleCallback(req);
   }
 
   // --- Daqui pra baixo exige Clerk JWT ---
@@ -151,6 +176,29 @@ async function handle(req: Request): Promise<Response> {
         return Response.json({ error: "session não encontrada" }, { status: 404 });
       }
       return Response.json(s);
+    }
+
+    // --- Conexões Google (Gmail/Drive/Calendar) — autenticadas ---
+    if (
+      url.pathname === "/api/connections/google/catalogue" &&
+      req.method === "GET"
+    ) {
+      return getCatalogue(req);
+    }
+    if (url.pathname === "/api/connections/google" && req.method === "GET") {
+      return getGoogleStatus(req);
+    }
+    if (
+      url.pathname === "/api/connections/google/start" &&
+      req.method === "POST"
+    ) {
+      return startGoogleConnect(req);
+    }
+    if (
+      url.pathname === "/api/connections/google/disconnect" &&
+      req.method === "POST"
+    ) {
+      return disconnectGoogle(req);
     }
 
     // POST /api/workspaces/by-slug/:slug/agents/sync  (reconcilia com Anthropic)
