@@ -11,6 +11,7 @@
     "db:studio": "drizzle-kit studio",
     "gen-master-key": "bun scripts/gen-master-key.ts",
     "provision-workspace": "bun scripts/provision-workspace.ts",
+    "rotate-sma-mcp-token": "bun scripts/rotate-sma-mcp-token.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

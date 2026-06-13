@@ -24,6 +24,8 @@ import {
   workspaces,
 } from "../src/db/schema";
 import { decryptSecret } from "../src/lib/crypto";
+import { getSecret, MCP_BEARER_KEY } from "../src/lib/secrets";
+import { rotateSmaMcpToken } from "../src/lib/smaMcp";
 import { BUILDER_CUSTOM_TOOLS } from "../src/provisioning/builderTools";
 import {
   BUILDER_SYSTEM_PROMPT,
@@ -474,6 +476,19 @@ async function main(): Promise<void> {
     log,
     reconcile,
   );
+
+  // 4b. Bearer + vault do MCP `sma`. Idempotente: só gera se ainda não existe
+  // (use o script rotate-sma-mcp-token pra rotacionar). Em loopback gera só o
+  // token local; com SMA_BASE_URL público, espelha a credential na vault.
+  const existingBearer = await getSecret(ws.id, MCP_BEARER_KEY);
+  if (existingBearer) {
+    log("reused", "bearer do MCP sma");
+  } else {
+    await rotateSmaMcpToken(client, ws.id, ws.slug, smaBaseUrl, (m) =>
+      log("info", m),
+    );
+    log("created", "bearer do MCP sma");
+  }
 
   // 5. Links memory ↔ agent (builder = RW em todas; orchestrator = RW em
   // short, RO em long e knowledge — declarativo no Neon; runtime usa).

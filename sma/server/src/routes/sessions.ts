@@ -9,6 +9,7 @@ import {
   workspaces,
 } from "../db/schema";
 import { decryptSecret } from "../lib/crypto";
+import { getSecret, MCP_VAULT_ID_KEY } from "../lib/secrets";
 import { priceUsage, type TokenUsage } from "../lib/pricing";
 import type { AuthContext } from "../lib/auth";
 import { ValidationError } from "./workspaces";
@@ -131,11 +132,16 @@ export async function createSession(
   const apiKey = await decryptSecret(ws.anthropicApiKeyEncrypted);
   const client = clientFor(apiKey);
 
+  // Anexa a vault do MCP `sma` (se provisionada) pra Anthropic encaminhar o
+  // bearer ao nosso endpoint quando o agente chamar a tool.
+  const smaVaultId = await getSecret(ws.id, MCP_VAULT_ID_KEY);
+
   // Anthropic-first.
   const created = await client.beta.sessions.create({
     agent: agent.anthropicAgentId,
     environment_id: ws.defaultEnvironmentId,
     title: input.title?.trim() || null,
+    ...(smaVaultId ? { vault_ids: [smaVaultId] } : {}),
   });
 
   const [row] = await db

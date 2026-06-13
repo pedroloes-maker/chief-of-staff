@@ -24,6 +24,7 @@ import {
   syncAgents,
   updateAgent,
 } from "./routes/agents";
+import { handleSmaMcp } from "./routes/mcp-sma";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -50,6 +51,13 @@ async function handle(req: Request): Promise<Response> {
         { status: 500 },
       );
     }
+  }
+
+  // MCP server `sma` — PÚBLICO (server-to-server da Anthropic; auth = bearer
+  // por workspace, validado no handler). Fica antes do gate Clerk de propósito.
+  const smaMcp = url.pathname.match(/^\/api\/mcp\/sma\/([^/]+)$/);
+  if (smaMcp) {
+    return handleSmaMcp(req, smaMcp[1]);
   }
 
   // --- Daqui pra baixo exige Clerk JWT ---
