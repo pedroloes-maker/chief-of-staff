@@ -26,6 +26,7 @@ import {
   googleOAuthEnv,
   inferLevel,
   listVaultCredentials,
+  reconcileGoogleMcpOnOrchestrator,
   serviceMcpUrl,
   signState,
   upsertMcpOAuthCredential,
@@ -310,6 +311,17 @@ export async function handleGoogleCallback(req: Request): Promise<Response> {
       });
     }
 
+    // Registra os MCP servers Google no orchestrator (always_allow) pra o
+    // agente poder usar as tools. Best-effort: não derruba o connect se falhar.
+    try {
+      await reconcileGoogleMcpOnOrchestrator(payload.workspaceId);
+    } catch (err) {
+      console.warn(
+        "[connections] reconcile do orchestrator falhou:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+
     return renderResult({
       ok: true,
       email: userInfo.email,
@@ -360,6 +372,18 @@ export async function disconnectGoogle(req: Request): Promise<Response> {
     mcpUrl,
     creds,
   );
+
+  // Remove o MCP server desse serviço do orchestrator (reconcile recalcula a
+  // partir das credentials restantes). Best-effort.
+  try {
+    await reconcileGoogleMcpOnOrchestrator(ws.id);
+  } catch (err) {
+    console.warn(
+      "[connections] reconcile do orchestrator falhou:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   return Response.json({ ok: true, archived });
 }
 
