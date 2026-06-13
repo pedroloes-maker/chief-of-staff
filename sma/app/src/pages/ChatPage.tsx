@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowUp,
@@ -8,7 +8,19 @@ import {
   Paperclip,
   Wrench,
 } from "lucide-react";
-import { useApi, type PersistedEvent, type SessionView } from "../lib/api";
+import {
+  useApi,
+  type AgentRole,
+  type AgentSummary,
+  type PersistedEvent,
+  type SessionView,
+} from "../lib/api";
+
+const ROLE_LABEL: Record<AgentRole, string> = {
+  orchestrator: "Orquestrador",
+  builder: "Builder",
+  sub_agent: "Sub-agente",
+};
 
 type ToolItem = {
   kind: "tool";
@@ -48,10 +60,37 @@ export default function ChatPage() {
   );
   const [session, setSession] = useState<SessionView | null>(null);
   const [cost, setCost] = useState<CostSummary | null>(null);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string | null>(sessionId);
   sessionIdRef.current = sessionId;
+
+  // Agentes do workspace: alimentam o seletor (só ativos) e resolvem o agente
+  // atrelado a uma sessão retomada pra exibir read-only (inclusive arquivados).
+  useEffect(() => {
+    if (!slug) return;
+    void api
+      .listAgents(slug)
+      .then(setAgents)
+      .catch(() => {});
+  }, [api, slug]);
+
+  // Default do seletor = orchestrator (só em sessão nova, sem escolha ainda).
+  useEffect(() => {
+    if (sessionId || selectedAgentId) return;
+    const active = agents.filter((a) => a.status === "active");
+    if (active.length === 0) return;
+    const orch = active.find((a) => a.role === "orchestrator");
+    setSelectedAgentId((orch ?? active[0]).id);
+  }, [agents, sessionId, selectedAgentId]);
+
+  // Agente em uso: o da sessão (retomada/criada) ou o escolhido no seletor.
+  const activeAgent = useMemo(() => {
+    const aid = session?.agentId ?? selectedAgentId;
+    return agents.find((a) => a.id === aid) ?? null;
+  }, [agents, session, selectedAgentId]);
 
   // Resume: se vier ?session=<id>, carrega metadados (título/modelo/custo) e o
   // histórico renderável persistido. O custo já aparece no topo sem precisar
@@ -145,7 +184,9 @@ export default function ChatPage() {
     try {
       let id = sessionIdRef.current;
       if (!id) {
-        const created = await api.createSession(slug);
+        const created = await api.createSession(slug, {
+          agentId: selectedAgentId ?? undefined,
+        });
         id = created.id;
         setSessionId(id);
         setSession(created);
@@ -163,7 +204,7 @@ export default function ChatPage() {
     } finally {
       setStreaming(false);
     }
-  }, [api, applyEvent, input, slug, streaming]);
+  }, [api, applyEvent, input, slug, streaming, selectedAgentId]);
 
   return (
     <div className="flex h-full flex-col">
@@ -173,12 +214,14 @@ export default function ChatPage() {
             {session ? sessionLabel(session) : "Nova sessão"}
           </h1>
           <p className="truncate text-[11px] text-fg-muted">
-            {session?.model ? (
-              <span className="font-mono">{session.model}</span>
-            ) : (
-              <>orchestrator</>
-            )}{" "}
-            · workspace <span className="font-mono">{slug}</span>
+            <span className="font-mono">{activeAgent?.slug ?? "orchestrator"}</span>
+            {session?.model && (
+              <>
+                {" · "}
+                <span className="font-mono">{session.model}</span>
+              </>
+            )}
+            {" · "}workspace <span className="font-mono">{slug}</span>
           </p>
         </div>
         <CostPill cost={cost} />
@@ -204,7 +247,44 @@ export default function ChatPage() {
         onChange={setInput}
         onSend={() => void send()}
         disabled={streaming}
+        picker={
+          !sessionId && agents.some((a) => a.status === "active") ? (
+            <AgentPicker
+              agents={agents.filter((a) => a.status === "active")}
+              value={selectedAgentId}
+              onChange={setSelectedAgentId}
+            />
+          ) : null
+        }
       />
+    </div>
+  );
+}
+
+/** Seletor "Falando com:" — só em sessão nova (a sessão fixa o agente). */
+function AgentPicker({
+  agents,
+  value,
+  onChange,
+}: {
+  agents: AgentSummary[];
+  value: string | null;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 text-[11px] text-fg-muted">
+      <span>Falando com:</span>
+      <select
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-full border border-line bg-surface px-3 py-1 font-mono text-[11px] text-fg shadow-card outline-none transition focus:border-line-strong"
+      >
+        {agents.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.slug} · {ROLE_LABEL[a.role]}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -368,14 +448,17 @@ function Composer({
   onChange,
   onSend,
   disabled,
+  picker,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
   disabled: boolean;
+  picker?: React.ReactNode;
 }) {
   return (
     <div className="glass shrink-0 border-t border-line px-6 py-4">
+      {picker}
       <div className="mx-auto flex max-w-3xl items-end gap-2">
         <button
           type="button"

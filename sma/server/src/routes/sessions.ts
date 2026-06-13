@@ -20,6 +20,8 @@ export type SessionView = {
   source: "web" | "whatsapp" | "job";
   status: "rescheduling" | "running" | "idle" | "terminated";
   model: string | null;
+  // Agente-alvo da sessão (fixado na criação). Null se o mirror sumiu.
+  agentId: string | null;
   usdEstimate: number;
   inputTokens: number;
   outputTokens: number;
@@ -35,6 +37,7 @@ function toView(s: typeof sessions.$inferSelect): SessionView {
     source: s.source,
     status: s.status,
     model: s.model,
+    agentId: s.agentId,
     usdEstimate: Number(s.usdEstimate),
     inputTokens: s.inputTokens,
     outputTokens: s.outputTokens,
@@ -70,6 +73,22 @@ async function loadOrchestrator(workspaceId: string) {
   return row ?? null;
 }
 
+// Carrega um agente ativo escolhido pra sessão, scoped ao workspace (impede
+// abrir sessão contra agente de outro workspace ou arquivado).
+async function loadAgentInWorkspace(agentId: string, workspaceId: string) {
+  const [row] = await db
+    .select()
+    .from(agents)
+    .where(
+      and(
+        eq(agents.id, agentId),
+        eq(agents.workspaceId, workspaceId),
+        eq(agents.status, "active"),
+      ),
+    );
+  return row ?? null;
+}
+
 async function loadSessionRow(id: string) {
   const [row] = await db.select().from(sessions).where(eq(sessions.id, id));
   return row ?? null;
@@ -80,12 +99,14 @@ function clientFor(apiKey: string): Anthropic {
 }
 
 /**
- * Cria uma session Anthropic-first contra o orchestrator do workspace, depois
- * espelha no Neon. Se a Anthropic falhar, nada é escrito localmente.
+ * Cria uma session Anthropic-first contra um agente do workspace (orchestrator
+ * por padrão; ou o `agentId` escolhido), depois espelha no Neon. Se a Anthropic
+ * falhar, nada é escrito localmente. A sessão fixa o agente na criação — a API
+ * não permite trocá-lo depois.
  */
 export async function createSession(
   slug: string,
-  input: { title?: string },
+  input: { title?: string; agentId?: string },
   auth: AuthContext,
 ): Promise<SessionView> {
   const ws = await loadWorkspaceRow(slug);
@@ -96,10 +117,14 @@ export async function createSession(
     );
   }
 
-  const orchestrator = await loadOrchestrator(ws.id);
-  if (!orchestrator) {
+  const agent = input.agentId
+    ? await loadAgentInWorkspace(input.agentId, ws.id)
+    : await loadOrchestrator(ws.id);
+  if (!agent) {
     throw new ValidationError(
-      "workspace não provisionado — rode scripts/provision-workspace.ts antes de abrir o chat",
+      input.agentId
+        ? "agente não encontrado, arquivado, ou fora deste workspace"
+        : "workspace não provisionado — rode scripts/provision-workspace.ts antes de abrir o chat",
     );
   }
 
@@ -108,7 +133,7 @@ export async function createSession(
 
   // Anthropic-first.
   const created = await client.beta.sessions.create({
-    agent: orchestrator.anthropicAgentId,
+    agent: agent.anthropicAgentId,
     environment_id: ws.defaultEnvironmentId,
     title: input.title?.trim() || null,
   });
@@ -118,11 +143,11 @@ export async function createSession(
     .values({
       workspaceId: ws.id,
       anthropicSessionId: created.id,
-      agentId: orchestrator.id,
+      agentId: agent.id,
       source: "web",
       status: created.status,
       title: created.title ?? input.title?.trim() ?? null,
-      model: orchestrator.model,
+      model: agent.model,
       createdBy: auth.userId,
     })
     .returning();

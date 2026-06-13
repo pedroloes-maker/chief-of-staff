@@ -110,7 +110,10 @@ async function handle(req: Request): Promise<Response> {
       return Response.json(await listSessions(wsSessions[1]));
     }
     if (wsSessions && req.method === "POST") {
-      const body = (await req.json().catch(() => ({}))) as { title?: string };
+      const body = (await req.json().catch(() => ({}))) as {
+        title?: string;
+        agentId?: string;
+      };
       const created = await createSession(wsSessions[1], body, auth);
       return Response.json(created, { status: 201 });
     }
