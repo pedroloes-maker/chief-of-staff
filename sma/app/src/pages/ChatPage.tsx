@@ -36,9 +36,11 @@ type ToolItem = {
 type ChatItem =
   | { kind: "user"; id: string; text: string }
   | { kind: "agent"; id: string; text: string }
-  | { kind: "thinking"; id: string }
   | ToolItem
   | { kind: "error"; id: string; message: string };
+
+// Fase ao vivo do turno — só uma aparece por vez no indicador do rodapé.
+type Phase = "thinking" | "responding";
 
 type CostSummary = {
   usd: number;
@@ -57,6 +59,8 @@ export default function ChatPage() {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [phase, setPhase] = useState<Phase>("thinking");
+  const abortRef = useRef<AbortController | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(
     searchParams.get("session"),
   );
@@ -134,17 +138,20 @@ export default function ChatPage() {
     const d = data as Record<string, unknown>;
     switch (event) {
       case "agent.message":
+        setPhase("responding");
         setItems((prev) => [
           ...prev,
           { kind: "agent", id: String(d.id ?? nextId()), text: String(d.text ?? "") },
         ]);
         break;
       case "agent.thinking":
-        setItems((prev) => [...prev, { kind: "thinking", id: String(d.id ?? nextId()) }]);
+        // Thinking é efêmero — vira a fase do indicador único, não um item fixo.
+        setPhase("thinking");
         break;
       case "agent.tool_use":
       case "agent.custom_tool_use":
       case "agent.mcp_tool_use":
+        setPhase("responding");
         setItems((prev) => [
           ...prev,
           {
@@ -160,6 +167,7 @@ export default function ChatPage() {
         break;
       case "agent.tool_result":
       case "agent.mcp_tool_result":
+        setPhase("responding");
         setItems((prev) =>
           prev.map((it) =>
             it.kind === "tool" && it.id === String(d.toolUseId)
@@ -191,7 +199,10 @@ export default function ChatPage() {
     if (!text || streaming || !slug) return;
     setInput("");
     setItems((prev) => [...prev, { kind: "user", id: nextId(), text }]);
+    setPhase("thinking");
     setStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       let id = sessionIdRef.current;
       if (!id) {
@@ -202,40 +213,62 @@ export default function ChatPage() {
         setSessionId(id);
         refetchSessions();
       }
-      await api.streamMessage(id, text, applyEvent);
+      await api.streamMessage(id, text, applyEvent, controller.signal);
     } catch (err) {
-      setItems((prev) => [
-        ...prev,
-        {
-          kind: "error",
-          id: nextId(),
-          message: err instanceof Error ? err.message : String(err),
-        },
-      ]);
+      // Abort intencional (botão stop / nova sessão) não é erro de UI.
+      if ((err as Error)?.name !== "AbortError") {
+        setItems((prev) => [
+          ...prev,
+          {
+            kind: "error",
+            id: nextId(),
+            message: err instanceof Error ? err.message : String(err),
+          },
+        ]);
+      }
     } finally {
       setStreaming(false);
+      abortRef.current = null;
     }
   }, [api, applyEvent, input, slug, streaming, selectedAgentId, refetchSessions]);
 
-  // Nova sessão: limpa o ?session e reseta o estado (o AgentPicker reaparece).
+  // Stop: para o agente server-side (user.interrupt em todos os threads) e
+  // aborta o fetch local pra liberar a UI na hora.
+  const stop = useCallback(async () => {
+    const id = sessionIdRef.current;
+    abortRef.current?.abort();
+    if (id) {
+      try {
+        await api.interruptSession(id);
+      } catch {
+        // best-effort — a UI já foi liberada pelo abort
+      }
+    }
+  }, [api]);
+
+  // Nova sessão: sempre interrompe o turno em andamento (se houver), limpa o
+  // ?session e reseta o estado (o AgentPicker reaparece).
   const newSession = useCallback(() => {
+    if (streaming) void stop();
     setSearchParams({});
     setSessionId(null);
     setItems([]);
     setCost(null);
     setInput("");
-  }, [setSearchParams]);
+  }, [setSearchParams, streaming, stop]);
 
-  // Troca de sessão pelo dropdown: navega via ?session=<id> (dispara o resume).
+  // Troca de sessão pelo dropdown: interrompe o turno atual e navega via
+  // ?session=<id> (dispara o resume).
   const selectSession = useCallback(
     (id: string) => {
       if (!id || id === "new") {
         newSession();
         return;
       }
+      if (streaming) void stop();
       setSearchParams({ session: id });
     },
-    [newSession, setSearchParams],
+    [newSession, setSearchParams, streaming, stop],
   );
 
   return (
@@ -275,7 +308,7 @@ export default function ChatPage() {
               {items.map((it) => (
                 <Item key={it.id} item={it} />
               ))}
-              {streaming && <Pending />}
+              {streaming && <Pending phase={phase} />}
             </div>
           )}
         </div>
@@ -285,7 +318,8 @@ export default function ChatPage() {
         value={input}
         onChange={setInput}
         onSend={() => void send()}
-        disabled={streaming}
+        onStop={() => void stop()}
+        streaming={streaming}
         picker={
           !sessionId && agents.some((a) => a.status === "active") ? (
             <AgentPicker
@@ -403,13 +437,6 @@ function Item({ item }: { item: ChatItem }) {
           </div>
         </div>
       );
-    case "thinking":
-      return (
-        <div className="flex items-center gap-2 pl-1 text-[11px] text-fg-faint">
-          <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
-          Pensando…
-        </div>
-      );
     case "tool":
       return <ToolCard item={item} />;
     case "error":
@@ -487,11 +514,12 @@ function Code({ value }: { value: unknown }) {
   );
 }
 
-function Pending() {
+// Indicador único do turno: pensando XOR respondendo, nunca os dois.
+function Pending({ phase }: { phase: Phase }) {
   return (
     <div className="flex items-center gap-2 pl-1 text-[11px] text-fg-faint">
       <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
-      O agente está respondendo…
+      {phase === "thinking" ? "Pensando…" : "O agente está respondendo…"}
     </div>
   );
 }
@@ -500,13 +528,15 @@ function Composer({
   value,
   onChange,
   onSend,
-  disabled,
+  onStop,
+  streaming,
   picker,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
-  disabled: boolean;
+  onStop: () => void;
+  streaming: boolean;
   picker?: React.ReactNode;
 }) {
   return (
@@ -536,25 +566,33 @@ function Composer({
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                onSend();
+                if (!streaming) onSend();
               }
             }}
             rows={1}
             placeholder="Mande uma mensagem… (Enter envia, Shift+Enter quebra linha)"
             className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-sm leading-relaxed text-fg placeholder:text-fg-faint focus:outline-none"
           />
-          <button
-            type="button"
-            onClick={onSend}
-            disabled={disabled || !value.trim()}
-            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-bg text-accent-fg transition duration-150 hover:bg-black active:scale-95 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            {disabled ? (
-              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
-            ) : (
+          {streaming ? (
+            <button
+              type="button"
+              onClick={onStop}
+              title="Interromper o agente"
+              aria-label="Interromper o agente"
+              className="mb-0.5 flex h-8 w-8 shrink-0 animate-pulse items-center justify-center rounded-full bg-red-600 text-white shadow-card transition duration-150 hover:bg-red-700 active:scale-95"
+            >
+              <span className="h-2.5 w-2.5 rounded-[2px] bg-white" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onSend}
+              disabled={!value.trim()}
+              className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-bg text-accent-fg transition duration-150 hover:bg-black active:scale-95 disabled:cursor-not-allowed disabled:opacity-30"
+            >
               <ArrowUp className="h-4 w-4" strokeWidth={2} />
-            )}
-          </button>
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -573,9 +611,6 @@ function buildItemsFromPersisted(events: PersistedEvent[]): ChatItem[] {
         break;
       case "agent.message":
         items.push({ kind: "agent", id: `p${e.seq}`, text: String(d.text ?? "") });
-        break;
-      case "agent.thinking":
-        items.push({ kind: "thinking", id: `p${e.seq}` });
         break;
       case "agent.tool_use":
       case "agent.custom_tool_use":

@@ -12,6 +12,7 @@ import {
 import {
   createSession,
   getSession,
+  interruptSession,
   listSessionEvents,
   listSessions,
   streamMessage,
@@ -175,6 +176,14 @@ async function handle(req: Request): Promise<Response> {
     if (sessionMessages && req.method === "POST") {
       const body = (await req.json().catch(() => ({}))) as { text?: string };
       return streamMessage(sessionMessages[1], body.text ?? "", req.signal);
+    }
+
+    // POST /api/sessions/:id/interrupt  (para o agente — user.interrupt)
+    const sessionInterrupt = url.pathname.match(
+      /^\/api\/sessions\/([^/]+)\/interrupt$/,
+    );
+    if (sessionInterrupt && req.method === "POST") {
+      return Response.json(await interruptSession(sessionInterrupt[1]));
     }
 
     // GET /api/sessions/:id
