@@ -9,7 +9,46 @@ const ROLE_LABEL: Record<AgentRole, string> = {
   sub_agent: "Sub-agente",
 };
 
-type RoleFilter = "all" | AgentRole;
+// Filtro combinado (single-select): status (Ativos/Arquivados) + papel
+// (Orquestrador/Sub-Agentes). "Sub-Agentes" engloba o builder, que é
+// conceitualmente um sub-agente. Default Ativos pra arquivados não poluírem.
+type AgentFilter =
+  | "all"
+  | "active"
+  | "archived"
+  | "orchestrator"
+  | "sub_agents";
+
+const FILTER_LABEL: Record<AgentFilter, string> = {
+  all: "Todos",
+  active: "Ativos",
+  archived: "Arquivados",
+  orchestrator: "Orquestrador",
+  sub_agents: "Sub-Agentes",
+};
+
+const FILTER_ORDER: AgentFilter[] = [
+  "all",
+  "active",
+  "archived",
+  "orchestrator",
+  "sub_agents",
+];
+
+function matchesFilter(a: AgentSummary, f: AgentFilter): boolean {
+  switch (f) {
+    case "all":
+      return true;
+    case "active":
+      return a.status === "active";
+    case "archived":
+      return a.status === "archived";
+    case "orchestrator":
+      return a.role === "orchestrator";
+    case "sub_agents":
+      return a.role === "sub_agent" || a.role === "builder";
+  }
+}
 
 export default function AgentsPage() {
   const { slug } = useParams<{ slug: string }>();
@@ -17,7 +56,7 @@ export default function AgentsPage() {
   const [data, setData] = useState<AgentSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
+  const [filter, setFilter] = useState<AgentFilter>("active");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -56,10 +95,10 @@ export default function AgentsPage() {
     const q = query.trim().toLowerCase();
     return data.filter(
       (a) =>
-        (roleFilter === "all" || a.role === roleFilter) &&
+        matchesFilter(a, filter) &&
         (q === "" || a.slug.toLowerCase().includes(q)),
     );
-  }, [data, query, roleFilter]);
+  }, [data, query, filter]);
 
   return (
     <div className="mx-auto max-w-5xl px-10 py-12">
@@ -111,21 +150,19 @@ export default function AgentsPage() {
           />
         </div>
         <div className="flex items-center gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-          {(["all", "orchestrator", "builder", "sub_agent"] as RoleFilter[]).map(
-            (r) => (
-              <button
-                key={r}
-                onClick={() => setRoleFilter(r)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                  roleFilter === r
-                    ? "bg-accent-bg text-accent-fg"
-                    : "text-fg-muted hover:bg-elev"
-                }`}
-              >
-                {r === "all" ? "Todos" : ROLE_LABEL[r]}
-              </button>
-            ),
-          )}
+          {FILTER_ORDER.map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                filter === f
+                  ? "bg-accent-bg text-accent-fg"
+                  : "text-fg-muted hover:bg-elev"
+              }`}
+            >
+              {FILTER_LABEL[f]}
+            </button>
+          ))}
         </div>
       </div>
 
