@@ -95,6 +95,24 @@ export type GoogleCatalogue = {
   services: Array<{ service: GoogleService; title: string; levels: GoogleLevel[] }>;
 };
 
+export type VaultCredentialView = {
+  id: string;
+  type: string;
+  displayName: string | null;
+  mcpServerUrl: string | null;
+  scope: string | null;
+  expiresAt: string | null;
+  archivedAt: string | null;
+};
+
+export type VaultView = {
+  id: string;
+  displayName: string | null;
+  kind: string | null;
+  archivedAt: string | null;
+  credentials: VaultCredentialView[];
+};
+
 export type PersistedEvent = { seq: number; type: string; payload: unknown };
 
 /** Um evento SSE do stream de mensagem: `event:` + `data:` (JSON). */
@@ -245,6 +263,13 @@ export function useApi() {
           method: "POST",
           body: JSON.stringify({ workspace: slug, service }),
         }),
+      listVaults: (slug: string) =>
+        request<VaultView[]>(`/api/workspaces/by-slug/${slug}/vaults`),
+      archiveCredential: (slug: string, vaultId: string, credId: string) =>
+        request<{ ok: true }>(
+          `/api/workspaces/by-slug/${slug}/vaults/${vaultId}/credentials/${credId}/archive`,
+          { method: "POST" },
+        ),
     }),
     [request, streamMessage],
   );
