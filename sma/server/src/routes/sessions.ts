@@ -375,6 +375,37 @@ function normalize(ev: Record<string, unknown>): NormalizedEvent | null {
   }
 }
 
+// Busca o timeline interno de um thread de sub-agente e emite só as tool calls
+// (use + result), rotuladas com o sub-agente. As MCP tool calls do sub-agente
+// não afloram no stream primary — só via threads.events.list. Best-effort: se
+// falhar, não derruba o turno (o ← ainda é emitido).
+async function emitSubagentTools(
+  client: Anthropic,
+  row: typeof sessions.$inferSelect,
+  threadId: string | undefined,
+  agentName: string | null,
+  persist: (n: NormalizedEvent, anthropicEventId?: string) => Promise<void>,
+  safeSse: (event: string, data: unknown) => void,
+): Promise<void> {
+  if (!threadId) return;
+  try {
+    const page = await client.beta.sessions.threads.events.list(threadId, {
+      session_id: row.anthropicSessionId,
+    });
+    for await (const sev of page as AsyncIterable<Record<string, unknown>>) {
+      const t = sev.type as string | undefined;
+      if (!t || (!t.includes("tool_use") && !t.includes("tool_result"))) continue;
+      const sn = normalize(sev);
+      if (!sn) continue;
+      sn.data.subagent = agentName; // rótulo "via <sub-agente>" no card
+      await persist(sn, sev.id as string | undefined);
+      safeSse(sn.type, sn.data);
+    }
+  } catch {
+    // best-effort — segue sem as tool calls do sub-agente
+  }
+}
+
 function usageOf(usage: Anthropic.Beta.Sessions.BetaManagedAgentsSessionUsage | undefined): TokenUsage {
   const cacheCreation =
     (usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
@@ -567,6 +598,19 @@ export async function streamMessage(
 
           const n = normalize(ev);
           if (n) {
+            // Antes de renderizar o ← (sub-agente devolveu o resultado), traz as
+            // tool calls internas dele — elas vivem no stream do thread do
+            // sub-agente, não no primary, então não chegam pelo events.stream().
+            if (type === "agent.thread_message_received") {
+              await emitSubagentTools(
+                client,
+                row,
+                ev.from_session_thread_id as string | undefined,
+                (n.data.agent as string | null) ?? null,
+                persist,
+                safeSse,
+              );
+            }
             await persist(n, ev.id as string | undefined);
             safeSse(n.type, n.data);
             continue;

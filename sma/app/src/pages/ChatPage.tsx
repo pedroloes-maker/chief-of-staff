@@ -32,6 +32,7 @@ type ToolItem = {
   input: unknown;
   custom: boolean;
   mcpServer?: string; // set quando é uma tool de servidor MCP
+  subagent?: string; // set quando a tool foi chamada dentro de um sub-agente
   result?: { text: string; isError: boolean };
 };
 
@@ -195,21 +196,30 @@ export default function ChatPage() {
       }
       case "agent.tool_use":
       case "agent.custom_tool_use":
-      case "agent.mcp_tool_use":
+      case "agent.mcp_tool_use": {
         setPhase("responding");
-        setItems((prev) => [
-          ...prev,
-          {
-            kind: "tool",
-            id: String(d.id ?? nextId()),
-            name: String(d.name ?? "tool"),
-            input: d.input,
-            custom: event === "agent.custom_tool_use",
-            mcpServer:
-              event === "agent.mcp_tool_use" ? String(d.mcpServer ?? "") : undefined,
-          },
-        ]);
+        const id = String(d.id ?? nextId());
+        setItems((prev) =>
+          prev.some((it) => it.id === id)
+            ? prev // dedupe: custom tools podem vir cross-postadas + do thread
+            : [
+                ...prev,
+                {
+                  kind: "tool",
+                  id,
+                  name: String(d.name ?? "tool"),
+                  input: d.input,
+                  custom: event === "agent.custom_tool_use",
+                  mcpServer:
+                    event === "agent.mcp_tool_use"
+                      ? String(d.mcpServer ?? "")
+                      : undefined,
+                  subagent: d.subagent ? String(d.subagent) : undefined,
+                },
+              ],
+        );
         break;
+      }
       case "agent.tool_result":
       case "agent.mcp_tool_result":
         setPhase("responding");
@@ -571,8 +581,12 @@ function ToolCard({ item }: { item: ToolItem }) {
     : item.custom
       ? "Ação do builder"
       : "Ferramenta";
+  // Tool chamada dentro de um sub-agente: indenta + badge pra agrupar sob a
+  // transferência (→ delegou) que aparece acima.
   return (
-    <div className="rounded-xl border border-line bg-surface shadow-card">
+    <div
+      className={`rounded-xl border border-line bg-surface shadow-card ${item.subagent ? "ml-6" : ""}`}
+    >
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -587,6 +601,11 @@ function ToolCard({ item }: { item: ToolItem }) {
           {label}
         </span>
         <span className="font-mono text-xs text-fg">{item.name}</span>
+        {item.subagent && (
+          <span className="rounded-full border border-line bg-elev px-1.5 py-0.5 text-[10px] font-medium text-fg-muted">
+            via {item.subagent}
+          </span>
+        )}
         {item.result?.isError && (
           <span className="ml-auto text-[11px] font-medium text-fg-muted">falhou</span>
         )}
@@ -773,14 +792,17 @@ function buildItemsFromPersisted(events: PersistedEvent[]): ChatItem[] {
       case "agent.tool_use":
       case "agent.custom_tool_use":
       case "agent.mcp_tool_use": {
+        const id = String(d.id ?? `p${e.seq}`);
+        if (toolById.has(id)) break; // dedupe
         const tool: ToolItem = {
           kind: "tool",
-          id: String(d.id ?? `p${e.seq}`),
+          id,
           name: String(d.name ?? "tool"),
           input: d.input,
           custom: e.type === "agent.custom_tool_use",
           mcpServer:
             e.type === "agent.mcp_tool_use" ? String(d.mcpServer ?? "") : undefined,
+          subagent: d.subagent ? String(d.subagent) : undefined,
         };
         toolById.set(tool.id, tool);
         items.push(tool);
