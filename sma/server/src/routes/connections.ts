@@ -26,7 +26,6 @@ import {
   googleOAuthEnv,
   inferLevel,
   listVaultCredentials,
-  reconcileGoogleMcpOnOrchestrator,
   serviceMcpUrl,
   signState,
   upsertMcpOAuthCredential,
@@ -311,16 +310,10 @@ export async function handleGoogleCallback(req: Request): Promise<Response> {
       });
     }
 
-    // Registra os MCP servers Google no orchestrator (always_allow) pra o
-    // agente poder usar as tools. Best-effort: não derruba o connect se falhar.
-    try {
-      await reconcileGoogleMcpOnOrchestrator(payload.workspaceId);
-    } catch (err) {
-      console.warn(
-        "[connections] reconcile do orchestrator falhou:",
-        err instanceof Error ? err.message : err,
-      );
-    }
+    // SMA-21: o MCP do serviço vive no sub-agent de domínio (`*_calendar_agent`
+    // etc.), criado pelo provision; gravar a credential na vault acima já basta
+    // pra ele funcionar na próxima sessão (casa por mcp_server_url). Não há mais
+    // reconcile do orchestrator no connect.
 
     return renderResult({
       ok: true,
@@ -373,16 +366,9 @@ export async function disconnectGoogle(req: Request): Promise<Response> {
     creds,
   );
 
-  // Remove o MCP server desse serviço do orchestrator (reconcile recalcula a
-  // partir das credentials restantes). Best-effort.
-  try {
-    await reconcileGoogleMcpOnOrchestrator(ws.id);
-  } catch (err) {
-    console.warn(
-      "[connections] reconcile do orchestrator falhou:",
-      err instanceof Error ? err.message : err,
-    );
-  }
+  // SMA-21: arquivar a credential da vault já desativa a tool no sub-agent de
+  // domínio (sem credential, a tool MCP é negada em runtime). Sem reconcile do
+  // orchestrator no disconnect.
 
   return Response.json({ ok: true, archived });
 }
