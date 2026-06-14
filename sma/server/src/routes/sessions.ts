@@ -514,6 +514,18 @@ export async function streamMessage(
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Durabilidade: o turno é consumido e PERSISTIDO até o fim (idle/terminated/
+      // erro) **independente** da conexão do cliente. Se o navegador cair no meio
+      // (abort) — ex.: durante a janela de delegação (~20s sem eventos) — paramos
+      // só de ESCREVER no SSE; seguimos persistindo, pra que o reload/refetch
+      // mostre o turno completo. Antes, um abort interrompia o loop e a resposta
+      // final do sub-agente se perdia (não chegava nem no chat nem no histórico).
+      let clientGone = signal.aborted;
+      signal.addEventListener("abort", () => {
+        clientGone = true;
+        console.log(`[stream] cliente desconectou (session ${row.id}) — seguindo até o fim do turno pra persistir`);
+      });
+
       const persist = async (n: NormalizedEvent, anthropicEventId?: string) => {
         await db.insert(sessionEvents).values({
           sessionId: row.id,
@@ -522,18 +534,27 @@ export async function streamMessage(
           payload: n.data,
         });
       };
+      // Escrita best-effort no SSE: se o cliente sumiu, vira no-op (mas o loop
+      // continua persistindo).
+      const safeSse = (event: string, data: unknown) => {
+        if (clientGone) return;
+        try {
+          sse(controller, event, data);
+        } catch {
+          clientGone = true;
+        }
+      };
 
-      // Keep-alive: numa delegação a janela "orchestrator delegou → sub-agente
-      // trabalhando" passa ~20-30s sem nenhum evento renderável. Um comentário
-      // SSE periódico evita que proxies derrubem a conexão ociosa (o que viraria
-      // hang sem `done`). Linhas iniciadas por ":" são ignoradas pelo parser do
-      // client (não têm `event:`/`data:`).
+      // Keep-alive: a janela de delegação passa ~20-30s sem evento renderável; um
+      // comentário SSE periódico evita que a conexão ociosa caia. Linhas com ":"
+      // são ignoradas pelo parser do client.
       const encoder = new TextEncoder();
       const ping = setInterval(() => {
+        if (clientGone) return;
         try {
           controller.enqueue(encoder.encode(": ping\n\n"));
         } catch {
-          // controller já fechado — ignora
+          clientGone = true;
         }
       }, 10_000);
 
@@ -542,32 +563,31 @@ export async function streamMessage(
           row.anthropicSessionId,
         );
         for await (const ev of events as AsyncIterable<Record<string, unknown>>) {
-          if (signal.aborted) break;
           const type = ev.type as string;
 
           const n = normalize(ev);
           if (n) {
             await persist(n, ev.id as string | undefined);
-            sse(controller, n.type, n.data);
+            safeSse(n.type, n.data);
             continue;
           }
 
           if (type === "session.status_idle") {
             const summary = await captureCost(client, row, "idle");
-            sse(controller, "cost", summary);
-            sse(controller, "done", { status: "idle" });
+            safeSse("cost", summary);
+            safeSse("done", { status: "idle" });
             break;
           }
           if (type === "session.status_terminated") {
             const summary = await captureCost(client, row, "terminated");
-            sse(controller, "cost", summary);
-            sse(controller, "done", { status: "terminated" });
+            safeSse("cost", summary);
+            safeSse("done", { status: "terminated" });
             break;
           }
           if (type === "session.status_rescheduled") {
             // Reagendamento = retentativa após erro transitório (não é o fim do
             // turno). Mantém feedback na UI e segue aguardando a recuperação.
-            sse(controller, "status", { phase: "retrying" });
+            safeSse("status", { phase: "retrying" });
             continue;
           }
           if (type === "session.error") {
@@ -575,24 +595,25 @@ export async function streamMessage(
             if (info.retry === "retrying") {
               // Transitório: a sessão vai retentar sozinha. Não aborta — sinaliza
               // e continua; ela vai a idle (sucesso) ou emite um erro terminal.
-              sse(controller, "status", {
-                phase: "retrying",
-                message: info.message,
-              });
+              safeSse("status", { phase: "retrying", message: info.message });
               continue;
             }
             // Terminal/exhausted: surface a mensagem específica e encerra.
-            sse(controller, "error", { message: info.message, kind: info.kind });
+            safeSse("error", { message: info.message, kind: info.kind });
             break;
           }
         }
       } catch (err) {
-        sse(controller, "error", {
+        safeSse("error", {
           message: err instanceof Error ? err.message : String(err),
         });
       } finally {
         clearInterval(ping);
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // já fechado pelo cliente — ok
+        }
       }
     },
   });

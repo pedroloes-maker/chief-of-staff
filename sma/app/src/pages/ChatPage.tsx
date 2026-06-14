@@ -75,6 +75,12 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [phase, setPhase] = useState<Phase>("thinking");
   const abortRef = useRef<AbortController | null>(null);
+  // Recuperação de turno: se o stream ao vivo cair sem `done` (sem ser stop do
+  // usuário), o turno pode ter terminado no servidor — buscamos o estado
+  // persistido. `lastEventRef` alimenta o watchdog (stream travado sem eventos).
+  const gotDoneRef = useRef(false);
+  const intentionalStopRef = useRef(false);
+  const lastEventRef = useRef(0);
   const [sessionId, setSessionId] = useState<string | null>(
     searchParams.get("session"),
   );
@@ -150,7 +156,11 @@ export default function ChatPage() {
 
   const applyEvent = useCallback((event: string, data: unknown) => {
     const d = data as Record<string, unknown>;
+    lastEventRef.current = Date.now(); // alimenta o watchdog
     switch (event) {
+      case "done":
+        gotDoneRef.current = true;
+        break;
       case "agent.message":
         setPhase("responding");
         setItems((prev) => [
@@ -233,6 +243,38 @@ export default function ChatPage() {
     }
   }, []);
 
+  // Recuperação: o turno é persistido no servidor mesmo se o stream ao vivo cair.
+  // Faz polling do estado persistido até a sessão ficar idle, reconstruindo os
+  // itens — garante que a resposta final apareça mesmo se o SSE travar/cair.
+  const recoverTurn = useCallback(
+    async (id: string) => {
+      setStreaming(true);
+      setPhase("responding");
+      for (let i = 0; i < 40; i++) {
+        let finished = false;
+        try {
+          const events = await api.getSessionEvents(id);
+          setItems(buildItemsFromPersisted(events));
+          const s = await api.getSession(id);
+          finished = s.status === "idle" || s.status === "terminated";
+          if (s.usdEstimate || s.inputTokens || s.outputTokens) {
+            setCost({
+              usd: s.usdEstimate,
+              inputTokens: s.inputTokens,
+              outputTokens: s.outputTokens,
+            });
+          }
+        } catch {
+          // transitório — tenta de novo
+        }
+        if (finished) break;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      setStreaming(false);
+    },
+    [api],
+  );
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || streaming || !slug) return;
@@ -240,10 +282,13 @@ export default function ChatPage() {
     setItems((prev) => [...prev, { kind: "user", id: nextId(), text }]);
     setPhase("thinking");
     setStreaming(true);
+    gotDoneRef.current = false;
+    intentionalStopRef.current = false;
+    lastEventRef.current = Date.now();
     const controller = new AbortController();
     abortRef.current = controller;
+    let id = sessionIdRef.current;
     try {
-      let id = sessionIdRef.current;
       if (!id) {
         const created = await api.createSession(slug, {
           agentId: selectedAgentId ?? undefined,
@@ -254,7 +299,8 @@ export default function ChatPage() {
       }
       await api.streamMessage(id, text, applyEvent, controller.signal);
     } catch (err) {
-      // Abort intencional (botão stop / nova sessão) não é erro de UI.
+      // Abort não-intencional (stream travou/caiu) cai no recovery abaixo; só
+      // erros de verdade viram item de erro.
       if ((err as Error)?.name !== "AbortError") {
         setItems((prev) => [
           ...prev,
@@ -269,12 +315,41 @@ export default function ChatPage() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [api, applyEvent, input, slug, streaming, selectedAgentId, refetchSessions]);
+    // Se o stream acabou sem `done` e não foi stop do usuário, o turno pode ter
+    // terminado no servidor (SSE caiu no meio) — recupera do estado persistido.
+    if (id && !gotDoneRef.current && !intentionalStopRef.current) {
+      await recoverTurn(id);
+    }
+  }, [
+    api,
+    applyEvent,
+    input,
+    slug,
+    streaming,
+    selectedAgentId,
+    refetchSessions,
+    recoverTurn,
+  ]);
+
+  // Watchdog: se o stream ficar > 45s sem nenhum evento renderável (sub-agente
+  // pendurado ou conexão SSE morta), aborta pra encerrar o stream travado — o
+  // recovery em `send` então busca o estado persistido. 45s > a janela normal de
+  // delegação (~20-30s), então não dispara em turnos saudáveis.
+  useEffect(() => {
+    if (!streaming) return;
+    const t = setInterval(() => {
+      if (Date.now() - lastEventRef.current > 45_000) {
+        abortRef.current?.abort();
+      }
+    }, 4000);
+    return () => clearInterval(t);
+  }, [streaming]);
 
   // Stop: para o agente server-side (user.interrupt em todos os threads) e
   // aborta o fetch local pra liberar a UI na hora.
   const stop = useCallback(async () => {
     const id = sessionIdRef.current;
+    intentionalStopRef.current = true; // não dispara recovery — foi o usuário
     abortRef.current?.abort();
     if (id) {
       try {
