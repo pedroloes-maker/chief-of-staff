@@ -372,6 +372,11 @@ async function handle(req: Request): Promise<Response> {
 
 const server = Bun.serve({
   port: PORT,
+  // SSE: o stream do chat fica ~20-30s sem bytes durante a delegação a um
+  // sub-agente. O default do Bun (idleTimeout 10s) derrubava a conexão no meio
+  // (→ "O agente está respondendo…" travado). 255s (máx) + o keep-alive ping
+  // de 10s do streamMessage mantêm a conexão viva por todo o turno.
+  idleTimeout: 255,
   fetch: handle,
 });
 

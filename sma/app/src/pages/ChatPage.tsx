@@ -5,12 +5,16 @@ import {
   ChevronRight,
   CornerDownRight,
   CornerUpLeft,
+  Eye,
+  EyeOff,
   Loader2,
   Mic,
   Paperclip,
   Plus,
   Wrench,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   useApi,
   type AgentRole,
@@ -32,6 +36,7 @@ type ToolItem = {
   input: unknown;
   custom: boolean;
   mcpServer?: string; // set quando é uma tool de servidor MCP
+  subagent?: string; // set quando a tool foi chamada dentro de um sub-agente
   result?: { text: string; isError: boolean };
 };
 
@@ -53,7 +58,8 @@ type ChatItem =
   | { kind: "error"; id: string; message: string };
 
 // Fase ao vivo do turno — só uma aparece por vez no indicador do rodapé.
-type Phase = "thinking" | "responding";
+// `retrying` = a sessão teve um erro transitório e está reprocessando.
+type Phase = "thinking" | "responding" | "retrying";
 
 type CostSummary = {
   usd: number;
@@ -74,10 +80,19 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [phase, setPhase] = useState<Phase>("thinking");
   const abortRef = useRef<AbortController | null>(null);
+  // Recuperação de turno: se o stream ao vivo cair sem `done` (sem ser stop do
+  // usuário), o turno pode ter terminado no servidor — buscamos o estado
+  // persistido. `lastEventRef` alimenta o watchdog (stream travado sem eventos).
+  const gotDoneRef = useRef(false);
+  const intentionalStopRef = useRef(false);
+  const lastEventRef = useRef(0);
   const [sessionId, setSessionId] = useState<string | null>(
     searchParams.get("session"),
   );
   const [cost, setCost] = useState<CostSummary | null>(null);
+  // Caixas de ferramenta + transferências ficam escondidas por padrão; o toggle
+  // do olho no header revela.
+  const [showInternals, setShowInternals] = useState(false);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
@@ -149,7 +164,11 @@ export default function ChatPage() {
 
   const applyEvent = useCallback((event: string, data: unknown) => {
     const d = data as Record<string, unknown>;
+    lastEventRef.current = Date.now(); // alimenta o watchdog
     switch (event) {
+      case "done":
+        gotDoneRef.current = true;
+        break;
       case "agent.message":
         setPhase("responding");
         setItems((prev) => [
@@ -184,21 +203,30 @@ export default function ChatPage() {
       }
       case "agent.tool_use":
       case "agent.custom_tool_use":
-      case "agent.mcp_tool_use":
+      case "agent.mcp_tool_use": {
         setPhase("responding");
-        setItems((prev) => [
-          ...prev,
-          {
-            kind: "tool",
-            id: String(d.id ?? nextId()),
-            name: String(d.name ?? "tool"),
-            input: d.input,
-            custom: event === "agent.custom_tool_use",
-            mcpServer:
-              event === "agent.mcp_tool_use" ? String(d.mcpServer ?? "") : undefined,
-          },
-        ]);
+        const id = String(d.id ?? nextId());
+        setItems((prev) =>
+          prev.some((it) => it.id === id)
+            ? prev // dedupe: custom tools podem vir cross-postadas + do thread
+            : [
+                ...prev,
+                {
+                  kind: "tool",
+                  id,
+                  name: String(d.name ?? "tool"),
+                  input: d.input,
+                  custom: event === "agent.custom_tool_use",
+                  mcpServer:
+                    event === "agent.mcp_tool_use"
+                      ? String(d.mcpServer ?? "")
+                      : undefined,
+                  subagent: d.subagent ? String(d.subagent) : undefined,
+                },
+              ],
+        );
         break;
+      }
       case "agent.tool_result":
       case "agent.mcp_tool_result":
         setPhase("responding");
@@ -209,6 +237,10 @@ export default function ChatPage() {
               : it,
           ),
         );
+        break;
+      case "status":
+        // Sinal de fase do servidor (ex.: reprocessando após erro transitório).
+        if (d.phase === "retrying") setPhase("retrying");
         break;
       case "cost":
         setCost({
@@ -228,6 +260,38 @@ export default function ChatPage() {
     }
   }, []);
 
+  // Recuperação: o turno é persistido no servidor mesmo se o stream ao vivo cair.
+  // Faz polling do estado persistido até a sessão ficar idle, reconstruindo os
+  // itens — garante que a resposta final apareça mesmo se o SSE travar/cair.
+  const recoverTurn = useCallback(
+    async (id: string) => {
+      setStreaming(true);
+      setPhase("responding");
+      for (let i = 0; i < 40; i++) {
+        let finished = false;
+        try {
+          const events = await api.getSessionEvents(id);
+          setItems(buildItemsFromPersisted(events));
+          const s = await api.getSession(id);
+          finished = s.status === "idle" || s.status === "terminated";
+          if (s.usdEstimate || s.inputTokens || s.outputTokens) {
+            setCost({
+              usd: s.usdEstimate,
+              inputTokens: s.inputTokens,
+              outputTokens: s.outputTokens,
+            });
+          }
+        } catch {
+          // transitório — tenta de novo
+        }
+        if (finished) break;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      setStreaming(false);
+    },
+    [api],
+  );
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || streaming || !slug) return;
@@ -235,10 +299,13 @@ export default function ChatPage() {
     setItems((prev) => [...prev, { kind: "user", id: nextId(), text }]);
     setPhase("thinking");
     setStreaming(true);
+    gotDoneRef.current = false;
+    intentionalStopRef.current = false;
+    lastEventRef.current = Date.now();
     const controller = new AbortController();
     abortRef.current = controller;
+    let id = sessionIdRef.current;
     try {
-      let id = sessionIdRef.current;
       if (!id) {
         const created = await api.createSession(slug, {
           agentId: selectedAgentId ?? undefined,
@@ -249,7 +316,8 @@ export default function ChatPage() {
       }
       await api.streamMessage(id, text, applyEvent, controller.signal);
     } catch (err) {
-      // Abort intencional (botão stop / nova sessão) não é erro de UI.
+      // Abort não-intencional (stream travou/caiu) cai no recovery abaixo; só
+      // erros de verdade viram item de erro.
       if ((err as Error)?.name !== "AbortError") {
         setItems((prev) => [
           ...prev,
@@ -264,12 +332,41 @@ export default function ChatPage() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [api, applyEvent, input, slug, streaming, selectedAgentId, refetchSessions]);
+    // Se o stream acabou sem `done` e não foi stop do usuário, o turno pode ter
+    // terminado no servidor (SSE caiu no meio) — recupera do estado persistido.
+    if (id && !gotDoneRef.current && !intentionalStopRef.current) {
+      await recoverTurn(id);
+    }
+  }, [
+    api,
+    applyEvent,
+    input,
+    slug,
+    streaming,
+    selectedAgentId,
+    refetchSessions,
+    recoverTurn,
+  ]);
+
+  // Watchdog: se o stream ficar > 45s sem nenhum evento renderável (sub-agente
+  // pendurado ou conexão SSE morta), aborta pra encerrar o stream travado — o
+  // recovery em `send` então busca o estado persistido. 45s > a janela normal de
+  // delegação (~20-30s), então não dispara em turnos saudáveis.
+  useEffect(() => {
+    if (!streaming) return;
+    const t = setInterval(() => {
+      if (Date.now() - lastEventRef.current > 45_000) {
+        abortRef.current?.abort();
+      }
+    }, 4000);
+    return () => clearInterval(t);
+  }, [streaming]);
 
   // Stop: para o agente server-side (user.interrupt em todos os threads) e
   // aborta o fetch local pra liberar a UI na hora.
   const stop = useCallback(async () => {
     const id = sessionIdRef.current;
+    intentionalStopRef.current = true; // não dispara recovery — foi o usuário
     abortRef.current?.abort();
     if (id) {
       try {
@@ -330,7 +427,26 @@ export default function ChatPage() {
             <Plus className="h-4 w-4" strokeWidth={1.5} />
           </button>
         </div>
-        <CostPill cost={cost} />
+        <div className="flex items-center gap-2">
+          <CostPill cost={cost} />
+          <button
+            type="button"
+            onClick={() => setShowInternals((v) => !v)}
+            title={
+              showInternals
+                ? "Esconder ferramentas e transferências"
+                : "Mostrar ferramentas e transferências"
+            }
+            aria-pressed={showInternals}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-fg-muted shadow-card transition hover:bg-elev active:scale-95"
+          >
+            {showInternals ? (
+              <Eye className="h-4 w-4" strokeWidth={1.5} />
+            ) : (
+              <EyeOff className="h-4 w-4" strokeWidth={1.5} />
+            )}
+          </button>
+        </div>
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -339,9 +455,15 @@ export default function ChatPage() {
             <EmptyState />
           ) : (
             <div className="space-y-4">
-              {items.map((it) => (
-                <Item key={it.id} item={it} />
-              ))}
+              {items
+                .filter(
+                  (it) =>
+                    showInternals ||
+                    (it.kind !== "tool" && it.kind !== "transfer"),
+                )
+                .map((it) => (
+                  <Item key={it.id} item={it} />
+                ))}
               {streaming && <Pending phase={phase} />}
             </div>
           )}
@@ -464,11 +586,10 @@ function Item({ item }: { item: ChatItem }) {
         </div>
       );
     case "agent":
+      // Sem balão — texto corrido, markdown renderizado como HTML.
       return (
-        <div className="flex justify-start">
-          <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-md border border-line bg-surface px-4 py-2.5 text-sm leading-relaxed text-fg shadow-card">
-            {item.text}
-          </div>
+        <div className="px-1">
+          <Markdown text={item.text} />
         </div>
       );
     case "tool":
@@ -484,15 +605,104 @@ function Item({ item }: { item: ChatItem }) {
   }
 }
 
+// Markdown do agente → HTML estilizado. react-markdown renderiza pra elementos
+// React (sem dangerouslySetInnerHTML); gfm adiciona tabelas + autolink de URLs
+// cruas (ex.: links de Meet). Estilos por elemento, alinhados ao tema.
+const MD_COMPONENTS = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>
+  ),
+  h1: ({ children }: { children?: React.ReactNode }) => (
+    <h1 className="mb-1.5 mt-3 text-base font-semibold first:mt-0">{children}</h1>
+  ),
+  h2: ({ children }: { children?: React.ReactNode }) => (
+    <h2 className="mb-1.5 mt-3 text-[15px] font-semibold first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="mb-1 mt-2.5 text-sm font-semibold first:mt-0">{children}</h3>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="my-1.5 list-disc space-y-0.5 pl-5">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="my-1.5 list-decimal space-y-0.5 pl-5">{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li className="leading-relaxed">{children}</li>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-semibold">{children}</strong>
+  ),
+  em: ({ children }: { children?: React.ReactNode }) => (
+    <em className="italic">{children}</em>
+  ),
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="break-words underline underline-offset-2 hover:text-fg-muted"
+    >
+      {children}
+    </a>
+  ),
+  code: ({ className, children }: { className?: string; children?: React.ReactNode }) =>
+    /language-/.test(className ?? "") ? (
+      <code className="font-mono text-[12px]">{children}</code>
+    ) : (
+      <code className="rounded bg-elev px-1 py-0.5 font-mono text-[0.85em]">
+        {children}
+      </code>
+    ),
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre className="my-2 overflow-x-auto rounded-lg bg-elev p-3 font-mono text-[12px] leading-relaxed">
+      {children}
+    </pre>
+  ),
+  hr: () => <hr className="my-3 border-line" />,
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote className="my-2 border-l-2 border-line pl-3 text-fg-muted">
+      {children}
+    </blockquote>
+  ),
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="w-full border-collapse text-[13px]">{children}</table>
+    </div>
+  ),
+  th: ({ children }: { children?: React.ReactNode }) => (
+    <th className="border border-line px-2 py-1 text-left font-semibold">{children}</th>
+  ),
+  td: ({ children }: { children?: React.ReactNode }) => (
+    <td className="border border-line px-2 py-1">{children}</td>
+  ),
+};
+
+function Markdown({ text }: { text: string }) {
+  return (
+    <div className="text-sm leading-relaxed text-fg">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 function ToolCard({ item }: { item: ToolItem }) {
-  const [open, setOpen] = useState(item.custom || !!item.mcpServer);
+  const [open, setOpen] = useState(false); // colapsada por padrão
   const label = item.mcpServer
     ? `MCP · ${item.mcpServer}`
     : item.custom
       ? "Ação do builder"
       : "Ferramenta";
+  // Fundo pastel: verde = ok, vermelho = falha, neutro enquanto pendente.
+  const tone = !item.result
+    ? "border-line bg-surface"
+    : item.result.isError
+      ? "border-red-200 bg-red-50"
+      : "border-green-200 bg-green-50";
   return (
-    <div className="rounded-xl border border-line bg-surface shadow-card">
+    <div className={`rounded-xl border shadow-card ${tone}`}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -507,18 +717,23 @@ function ToolCard({ item }: { item: ToolItem }) {
           {label}
         </span>
         <span className="font-mono text-xs text-fg">{item.name}</span>
+        {item.subagent && (
+          <span className="rounded-full border border-line bg-elev px-1.5 py-0.5 text-[10px] font-medium text-fg-muted">
+            via {item.subagent}
+          </span>
+        )}
         {item.result?.isError && (
-          <span className="ml-auto text-[11px] font-medium text-fg-muted">falhou</span>
+          <span className="ml-auto text-[11px] font-medium text-red-700">falhou</span>
         )}
       </button>
       {open && (
-        <div className="space-y-2 border-t border-line px-4 py-3">
+        <div className="space-y-2 border-t border-line/70 px-4 py-3">
           <Labeled label="Entrada">
             <Code value={item.input} />
           </Labeled>
           {item.result && (
             <Labeled label={item.result.isError ? "Erro" : "Resultado"}>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-elev p-2.5 font-mono text-[11px] leading-relaxed text-fg">
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-white/60 p-2.5 font-mono text-[11px] leading-relaxed text-fg">
                 {item.result.text || "—"}
               </pre>
             </Labeled>
@@ -532,14 +747,13 @@ function ToolCard({ item }: { item: ToolItem }) {
 /** Card de transferência de/para sub-agente (→ delegou / ← respondeu). */
 function TransferCard({ item }: { item: TransferItem }) {
   const sent = item.direction === "sent";
-  // O resultado (received) abre por padrão — é o dado que o usuário pediu; a
-  // instrução de ida (sent) começa colapsada.
-  const [open, setOpen] = useState(!sent);
+  const [open, setOpen] = useState(false); // colapsada por padrão
   const agent = item.agent ?? "sub-agente";
   const label = sent ? "Delegou para" : "Respondeu";
   const Icon = sent ? CornerDownRight : CornerUpLeft;
   return (
-    <div className="rounded-xl border border-line bg-elev shadow-card">
+    // Amarelo pastel pra diferenciar das tool boxes (verde/vermelho).
+    <div className="rounded-xl border border-yellow-200 bg-yellow-50 shadow-card">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -556,8 +770,8 @@ function TransferCard({ item }: { item: TransferItem }) {
         <span className="font-mono text-xs text-fg">{agent}</span>
       </button>
       {open && item.text && (
-        <div className="border-t border-line px-4 py-3">
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-surface p-2.5 font-mono text-[11px] leading-relaxed text-fg">
+        <div className="border-t border-yellow-200/70 px-4 py-3">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-white/60 p-2.5 font-mono text-[11px] leading-relaxed text-fg">
             {item.text}
           </pre>
         </div>
@@ -587,12 +801,17 @@ function Code({ value }: { value: unknown }) {
   );
 }
 
-// Indicador único do turno: pensando XOR respondendo, nunca os dois.
+// Indicador único do turno: uma fase por vez, nunca duas.
+const PHASE_LABEL: Record<Phase, string> = {
+  thinking: "Pensando…",
+  responding: "O agente está respondendo…",
+  retrying: "Reprocessando… (tentando de novo)",
+};
 function Pending({ phase }: { phase: Phase }) {
   return (
     <div className="flex items-center gap-2 pl-1 text-[11px] text-fg-faint">
       <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
-      {phase === "thinking" ? "Pensando…" : "O agente está respondendo…"}
+      {PHASE_LABEL[phase]}
     </div>
   );
 }
@@ -688,14 +907,17 @@ function buildItemsFromPersisted(events: PersistedEvent[]): ChatItem[] {
       case "agent.tool_use":
       case "agent.custom_tool_use":
       case "agent.mcp_tool_use": {
+        const id = String(d.id ?? `p${e.seq}`);
+        if (toolById.has(id)) break; // dedupe
         const tool: ToolItem = {
           kind: "tool",
-          id: String(d.id ?? `p${e.seq}`),
+          id,
           name: String(d.name ?? "tool"),
           input: d.input,
           custom: e.type === "agent.custom_tool_use",
           mcpServer:
             e.type === "agent.mcp_tool_use" ? String(d.mcpServer ?? "") : undefined,
+          subagent: d.subagent ? String(d.subagent) : undefined,
         };
         toolById.set(tool.id, tool);
         items.push(tool);

@@ -14,6 +14,7 @@ import { decryptSecret } from "../lib/crypto";
 import { getSecret, MCP_VAULT_ID_KEY } from "../lib/secrets";
 import { getWorkspaceGoogleVaultId } from "../lib/google-connections";
 import { priceUsage, type TokenUsage } from "../lib/pricing";
+import { sessionErrorInfo } from "../lib/session-errors";
 import type { AuthContext } from "../lib/auth";
 import { ValidationError } from "./workspaces";
 
@@ -374,6 +375,37 @@ function normalize(ev: Record<string, unknown>): NormalizedEvent | null {
   }
 }
 
+// Busca o timeline interno de um thread de sub-agente e emite só as tool calls
+// (use + result), rotuladas com o sub-agente. As MCP tool calls do sub-agente
+// não afloram no stream primary — só via threads.events.list. Best-effort: se
+// falhar, não derruba o turno (o ← ainda é emitido).
+async function emitSubagentTools(
+  client: Anthropic,
+  row: typeof sessions.$inferSelect,
+  threadId: string | undefined,
+  agentName: string | null,
+  persist: (n: NormalizedEvent, anthropicEventId?: string) => Promise<void>,
+  safeSse: (event: string, data: unknown) => void,
+): Promise<void> {
+  if (!threadId) return;
+  try {
+    const page = await client.beta.sessions.threads.events.list(threadId, {
+      session_id: row.anthropicSessionId,
+    });
+    for await (const sev of page as AsyncIterable<Record<string, unknown>>) {
+      const t = sev.type as string | undefined;
+      if (!t || (!t.includes("tool_use") && !t.includes("tool_result"))) continue;
+      const sn = normalize(sev);
+      if (!sn) continue;
+      sn.data.subagent = agentName; // rótulo "via <sub-agente>" no card
+      await persist(sn, sev.id as string | undefined);
+      safeSse(sn.type, sn.data);
+    }
+  } catch {
+    // best-effort — segue sem as tool calls do sub-agente
+  }
+}
+
 function usageOf(usage: Anthropic.Beta.Sessions.BetaManagedAgentsSessionUsage | undefined): TokenUsage {
   const cacheCreation =
     (usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
@@ -513,6 +545,18 @@ export async function streamMessage(
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Durabilidade: o turno é consumido e PERSISTIDO até o fim (idle/terminated/
+      // erro) **independente** da conexão do cliente. Se o navegador cair no meio
+      // (abort) — ex.: durante a janela de delegação (~20s sem eventos) — paramos
+      // só de ESCREVER no SSE; seguimos persistindo, pra que o reload/refetch
+      // mostre o turno completo. Antes, um abort interrompia o loop e a resposta
+      // final do sub-agente se perdia (não chegava nem no chat nem no histórico).
+      let clientGone = signal.aborted;
+      signal.addEventListener("abort", () => {
+        clientGone = true;
+        console.log(`[stream] cliente desconectou (session ${row.id}) — seguindo até o fim do turno pra persistir`);
+      });
+
       const persist = async (n: NormalizedEvent, anthropicEventId?: string) => {
         await db.insert(sessionEvents).values({
           sessionId: row.id,
@@ -521,18 +565,27 @@ export async function streamMessage(
           payload: n.data,
         });
       };
+      // Escrita best-effort no SSE: se o cliente sumiu, vira no-op (mas o loop
+      // continua persistindo).
+      const safeSse = (event: string, data: unknown) => {
+        if (clientGone) return;
+        try {
+          sse(controller, event, data);
+        } catch {
+          clientGone = true;
+        }
+      };
 
-      // Keep-alive: numa delegação a janela "orchestrator delegou → sub-agente
-      // trabalhando" passa ~20-30s sem nenhum evento renderável. Um comentário
-      // SSE periódico evita que proxies derrubem a conexão ociosa (o que viraria
-      // hang sem `done`). Linhas iniciadas por ":" são ignoradas pelo parser do
-      // client (não têm `event:`/`data:`).
+      // Keep-alive: a janela de delegação passa ~20-30s sem evento renderável; um
+      // comentário SSE periódico evita que a conexão ociosa caia. Linhas com ":"
+      // são ignoradas pelo parser do client.
       const encoder = new TextEncoder();
       const ping = setInterval(() => {
+        if (clientGone) return;
         try {
           controller.enqueue(encoder.encode(": ping\n\n"));
         } catch {
-          // controller já fechado — ignora
+          clientGone = true;
         }
       }, 10_000);
 
@@ -541,40 +594,70 @@ export async function streamMessage(
           row.anthropicSessionId,
         );
         for await (const ev of events as AsyncIterable<Record<string, unknown>>) {
-          if (signal.aborted) break;
           const type = ev.type as string;
 
           const n = normalize(ev);
           if (n) {
+            // Antes de renderizar o ← (sub-agente devolveu o resultado), traz as
+            // tool calls internas dele — elas vivem no stream do thread do
+            // sub-agente, não no primary, então não chegam pelo events.stream().
+            if (type === "agent.thread_message_received") {
+              await emitSubagentTools(
+                client,
+                row,
+                ev.from_session_thread_id as string | undefined,
+                (n.data.agent as string | null) ?? null,
+                persist,
+                safeSse,
+              );
+            }
             await persist(n, ev.id as string | undefined);
-            sse(controller, n.type, n.data);
+            safeSse(n.type, n.data);
             continue;
           }
 
           if (type === "session.status_idle") {
             const summary = await captureCost(client, row, "idle");
-            sse(controller, "cost", summary);
-            sse(controller, "done", { status: "idle" });
+            safeSse("cost", summary);
+            safeSse("done", { status: "idle" });
             break;
           }
           if (type === "session.status_terminated") {
             const summary = await captureCost(client, row, "terminated");
-            sse(controller, "cost", summary);
-            sse(controller, "done", { status: "terminated" });
+            safeSse("cost", summary);
+            safeSse("done", { status: "terminated" });
             break;
           }
-          if (type === "session.error" || type === "session.status_error") {
-            sse(controller, "error", { message: "erro na sessão Anthropic" });
+          if (type === "session.status_rescheduled") {
+            // Reagendamento = retentativa após erro transitório (não é o fim do
+            // turno). Mantém feedback na UI e segue aguardando a recuperação.
+            safeSse("status", { phase: "retrying" });
+            continue;
+          }
+          if (type === "session.error") {
+            const info = sessionErrorInfo(ev.error);
+            if (info.retry === "retrying") {
+              // Transitório: a sessão vai retentar sozinha. Não aborta — sinaliza
+              // e continua; ela vai a idle (sucesso) ou emite um erro terminal.
+              safeSse("status", { phase: "retrying", message: info.message });
+              continue;
+            }
+            // Terminal/exhausted: surface a mensagem específica e encerra.
+            safeSse("error", { message: info.message, kind: info.kind });
             break;
           }
         }
       } catch (err) {
-        sse(controller, "error", {
+        safeSse("error", {
           message: err instanceof Error ? err.message : String(err),
         });
       } finally {
         clearInterval(ping);
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // já fechado pelo cliente — ok
+        }
       }
     },
   });
