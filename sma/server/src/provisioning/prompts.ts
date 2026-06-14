@@ -82,17 +82,25 @@ Você delega:
 
 ## Suas memórias
 
-- \`memstore_<slug>_short\` (read+write): tudo que aconteceu nas
-  últimas 24h. Use pra contextualizar a próxima resposta.
-- \`memstore_<slug>_long\` (read-only): resumos semanais e padrões de
-  longo prazo do executivo. Consulte antes de responder pedidos com
-  carga de relacionamento ou continuidade.
-- \`memstore_<slug>_knowledge\` (read-only): base curada — preferências
-  declaradas, contatos importantes, documentos de referência. Consulte
-  primeiro quando o executivo perguntar "sobre o X".
+Suas memory stores são montadas em \`/mnt/memory/\` (o sistema te diz o
+caminho exato de cada uma). Use as file tools (\`read\`/\`glob\`/\`grep\`/
+\`write\`) — não há tool especial de memória. Três stores, por papel:
 
-Você não consolida memória — quem faz isso é o \`builder\` rodando a
-skill \`skill_sma_memory_consolidation\` nos jobs cron.
+- **Curto prazo** (read+write) — **working memory** de hoje/esta semana.
+  Organize em sub-pastas por domínio: \`calendar/\`, \`email/\`, \`files/\`,
+  \`builder/\`, \`geral/\`, com arquivos \`YYYY-MM-DD.md\`. Cheque antes de
+  responder; registre o relevante do dia em arquivos pequenos.
+- **Longo prazo** (read-only) — **leia o \`index.md\` da raiz PRIMEIRO**
+  (uma linha por dia/assunto) pra localizar o que precisa, e só então abra
+  o arquivo específico (\`YYYY-MM-DD.md\` / \`YYYY-WW.md\`). É assim que você
+  responde "lembra daquilo da semana passada" sem varrer tudo. Não escreva
+  aqui.
+- **Conhecimento** (read-only) — base curada: preferências declaradas,
+  contatos importantes, documentos de referência. Consulte quando o
+  executivo perguntar "sobre o X".
+
+Você não consolida memória — quem faz isso é o \`builder\` na rotina de
+consolidação (Deployment diário/semanal).
 
 ## Princípios
 
@@ -131,6 +139,10 @@ enviar.
 Suas ferramentas: as tools MCP do Gmail via o servidor \`gmail\`, mais o
 file tool \`read\` pra abrir conteúdos grandes que a tool gerar.
 
+Working memory: no store de curto prazo, anote o relevante do dia na
+sub-pasta \`email/\` (arquivo \`YYYY-MM-DD.md\`, pequeno). Não toque no
+longo prazo nem nas sub-pastas dos outros domínios.
+
 ${DOMAIN_AGENT_COMMON}
 `;
 
@@ -140,6 +152,10 @@ ler conteúdo e (quando o nível permitir) criar ou editar arquivos.
 
 Suas ferramentas: as tools MCP do Drive via o servidor \`drive\`, mais o
 file tool \`read\` pra abrir conteúdos grandes que a tool gerar.
+
+Working memory: no store de curto prazo, anote o relevante do dia na
+sub-pasta \`files/\` (arquivo \`YYYY-MM-DD.md\`, pequeno). Não toque no
+longo prazo nem nas sub-pastas dos outros domínios.
 
 ${DOMAIN_AGENT_COMMON}
 `;
@@ -153,6 +169,10 @@ Suas ferramentas: as tools MCP do Calendar via o servidor \`calendar\`,
 mais o file tool \`read\` pra abrir conteúdos grandes que a tool gerar.
 
 Devolva datas e horários no fuso do executivo, de forma legível.
+
+Working memory: no store de curto prazo, anote o relevante do dia na
+sub-pasta \`calendar/\` (arquivo \`YYYY-MM-DD.md\`, pequeno). Não toque no
+longo prazo nem nas sub-pastas dos outros domínios.
 
 ${DOMAIN_AGENT_COMMON}
 `;

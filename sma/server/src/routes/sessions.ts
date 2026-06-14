@@ -2,8 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/client";
 import {
+  agentMemoryStores,
   agents,
   costEntries,
+  memoryStores,
   sessionEvents,
   sessions,
   workspaces,
@@ -100,6 +102,59 @@ function clientFor(apiKey: string): Anthropic {
   return new Anthropic({ apiKey });
 }
 
+type MemoryTier = "short" | "long" | "knowledge";
+type MemoryAccess = "read_write" | "read_only";
+
+type MemoryResource = {
+  type: "memory_store";
+  memory_store_id: string;
+  access: MemoryAccess;
+  instructions: string;
+};
+
+// Guia de uso do mount, injetada no system prompt da sessão por store (PRD §7.2).
+// Varia por tier e por acesso (long rw = consolidador; long ro = leitor).
+function memoryInstructions(tier: MemoryTier, access: MemoryAccess): string {
+  // Caminhos são relativos à raiz deste store (o sistema injeta o mount path
+  // exato de cada um) — não cravar /mnt/memory/<x> aqui porque o nome do store
+  // é derivado por workspace.
+  switch (tier) {
+    case "short":
+      return "Working memory (hoje/esta semana). Organize em sub-pastas por domínio dentro deste store: calendar/, email/, files/, builder/, geral/ — arquivos YYYY-MM-DD.md. Cada sub-agente só na sua sub-pasta. Cheque antes de responder; registre o relevante continuamente.";
+    case "long":
+      return access === "read_write"
+        ? "Longo prazo (consolidador). Mantenha index.md (1 linha por dia/assunto) na raiz deste store + os rollups YYYY-MM-DD.md e YYYY-WW.md. Comprima o curto prazo ao consolidar."
+        : "Longo prazo. Leia o index.md (raiz deste store) PRIMEIRO — 1 linha por dia/assunto — pra localizar o que precisa, e só então abra o arquivo específico (YYYY-MM-DD.md / YYYY-WW.md). Não escreva aqui.";
+    case "knowledge":
+      return "Base de conhecimento curada. Referência factual sobre projetos, pessoas e decisões anteriores. Consulte quando o executivo perguntar 'sobre o X'.";
+  }
+}
+
+// Monta os resources de memória da sessão a partir do mapeamento agente↔store
+// (mirror Neon, populado pelo provision). A memória é anexada na SESSÃO, não no
+// agente (PRD §7.1.1); num coordinator todos os threads compartilham os mounts.
+async function loadMemoryResources(agentRowId: string): Promise<MemoryResource[]> {
+  const rows = await db
+    .select({
+      anthropicId: memoryStores.anthropicMemoryStoreId,
+      tier: memoryStores.tier,
+      access: agentMemoryStores.accessLevel,
+    })
+    .from(agentMemoryStores)
+    .innerJoin(
+      memoryStores,
+      eq(agentMemoryStores.memoryStoreId, memoryStores.id),
+    )
+    .where(eq(agentMemoryStores.agentId, agentRowId));
+
+  return rows.map((r) => ({
+    type: "memory_store" as const,
+    memory_store_id: r.anthropicId,
+    access: r.access,
+    instructions: memoryInstructions(r.tier, r.access),
+  }));
+}
+
 /**
  * Cria uma session Anthropic-first contra um agente do workspace (orchestrator
  * por padrão; ou o `agentId` escolhido), depois espelha no Neon. Se a Anthropic
@@ -141,11 +196,16 @@ export async function createSession(
     (v): v is string => !!v,
   );
 
+  // Monta os memory stores que este agente enxerga (PRD §7.1.1). Num coordinator,
+  // os sub-agentes herdam estes mounts (filesystem compartilhado).
+  const memoryResources = await loadMemoryResources(agent.id);
+
   // Anthropic-first.
   const created = await client.beta.sessions.create({
     agent: agent.anthropicAgentId,
     environment_id: ws.defaultEnvironmentId,
     title: input.title?.trim() || null,
+    ...(memoryResources.length ? { resources: memoryResources } : {}),
     ...(vaultIds.length ? { vault_ids: vaultIds } : {}),
   });
 

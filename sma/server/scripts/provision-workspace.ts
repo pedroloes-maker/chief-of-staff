@@ -225,6 +225,37 @@ async function ensureMemoryStore(
   return { rowId: inserted.id, anthropicId: created.id, slug };
 }
 
+// Semeia um arquivo de memória se ainda não existir (idempotente). Usado pra
+// criar o long/index.md inicial, pra a instrução "leia o índice primeiro" do
+// orchestrator (PRD §7.2) não bater num arquivo ausente.
+const INDEX_SEED = `# Índice da memória de longo prazo
+
+Uma linha por dia/assunto consolidado, do mais recente pro mais antigo. O
+consolidador (builder, via Deployment) mantém este arquivo.
+
+Formato: \`YYYY-MM-DD — resumo curto\` (aponta pro arquivo long/YYYY-MM-DD.md).
+`;
+
+async function ensureMemorySeed(
+  client: Anthropic,
+  storeId: string,
+  path: string,
+  content: string,
+  log: (kind: string, msg: string) => void,
+): Promise<void> {
+  try {
+    await client.beta.memoryStores.memories.create(storeId, { path, content });
+    log("created", `memory seed ${path}`);
+  } catch (err) {
+    // 409 = já existe → idempotente.
+    if ((err as { status?: number })?.status === 409) {
+      log("reused", `memory seed ${path}`);
+      return;
+    }
+    throw err;
+  }
+}
+
 type AgentCreateInput = {
   slug: string;
   role: "orchestrator" | "builder" | "sub_agent";
@@ -434,6 +465,9 @@ async function main(): Promise<void> {
     `Base de conhecimento curada do workspace ${ws.slug}: preferências declaradas, contatos importantes, documentos de referência.`,
     log,
   );
+
+  // Seed do índice de longo prazo (idempotente) — o orchestrator lê isso primeiro.
+  await ensureMemorySeed(client, memLong.anthropicId, "/index.md", INDEX_SEED, log);
 
   // 3. Builder agent (control-plane tools + 2 custom skills).
   const builder = await ensureAgent(
