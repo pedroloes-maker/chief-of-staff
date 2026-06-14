@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowUp,
@@ -6,6 +6,7 @@ import {
   Loader2,
   Mic,
   Paperclip,
+  Plus,
   Wrench,
 } from "lucide-react";
 import {
@@ -50,7 +51,7 @@ const nextId = () => `local-${localSeq++}`;
 
 export default function ChatPage() {
   const { slug } = useParams<{ slug: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const api = useApi();
 
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -59,10 +60,10 @@ export default function ChatPage() {
   const [sessionId, setSessionId] = useState<string | null>(
     searchParams.get("session"),
   );
-  const [session, setSession] = useState<SessionView | null>(null);
   const [cost, setCost] = useState<CostSummary | null>(null);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionView[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string | null>(sessionId);
@@ -87,11 +88,17 @@ export default function ChatPage() {
     setSelectedAgentId((orch ?? active[0]).id);
   }, [agents, sessionId, selectedAgentId]);
 
-  // Agente em uso: o da sessão (retomada/criada) ou o escolhido no seletor.
-  const activeAgent = useMemo(() => {
-    const aid = session?.agentId ?? selectedAgentId;
-    return agents.find((a) => a.id === aid) ?? null;
-  }, [agents, session, selectedAgentId]);
+  // Lista de sessões do workspace pro dropdown do header.
+  const refetchSessions = useCallback(() => {
+    if (!slug) return;
+    void api
+      .listSessions(slug)
+      .then(setSessions)
+      .catch(() => {});
+  }, [api, slug]);
+  useEffect(() => {
+    refetchSessions();
+  }, [refetchSessions]);
 
   // Resume: se vier ?session=<id>, carrega metadados (título/modelo/custo) e o
   // histórico renderável persistido. O custo já aparece no topo sem precisar
@@ -103,7 +110,6 @@ export default function ChatPage() {
     void api
       .getSession(resume)
       .then((s) => {
-        setSession(s);
         setCost({
           usd: s.usdEstimate,
           inputTokens: s.inputTokens,
@@ -194,7 +200,7 @@ export default function ChatPage() {
         });
         id = created.id;
         setSessionId(id);
-        setSession(created);
+        refetchSessions();
       }
       await api.streamMessage(id, text, applyEvent);
     } catch (err) {
@@ -209,25 +215,53 @@ export default function ChatPage() {
     } finally {
       setStreaming(false);
     }
-  }, [api, applyEvent, input, slug, streaming, selectedAgentId]);
+  }, [api, applyEvent, input, slug, streaming, selectedAgentId, refetchSessions]);
+
+  // Nova sessão: limpa o ?session e reseta o estado (o AgentPicker reaparece).
+  const newSession = useCallback(() => {
+    setSearchParams({});
+    setSessionId(null);
+    setItems([]);
+    setCost(null);
+    setInput("");
+  }, [setSearchParams]);
+
+  // Troca de sessão pelo dropdown: navega via ?session=<id> (dispara o resume).
+  const selectSession = useCallback(
+    (id: string) => {
+      if (!id || id === "new") {
+        newSession();
+        return;
+      }
+      setSearchParams({ session: id });
+    },
+    [newSession, setSearchParams],
+  );
 
   return (
     <div className="flex h-full flex-col">
       <header className="glass z-10 flex h-16 shrink-0 items-center justify-between border-b border-line px-8">
-        <div className="min-w-0">
-          <h1 className="text-sm font-semibold tracking-tight text-fg">
-            {session ? sessionLabel(session) : "Nova sessão"}
-          </h1>
-          <p className="truncate text-[11px] text-fg-muted">
-            <span className="font-mono">{activeAgent?.slug ?? "orchestrator"}</span>
-            {session?.model && (
-              <>
-                {" · "}
-                <span className="font-mono">{session.model}</span>
-              </>
-            )}
-            {" · "}workspace <span className="font-mono">{slug}</span>
-          </p>
+        <div className="flex min-w-0 items-center gap-2">
+          <select
+            value={sessionId ?? "new"}
+            onChange={(e) => selectSession(e.target.value)}
+            className="max-w-[55vw] truncate rounded-full border border-line bg-surface px-3.5 py-1.5 text-[13px] font-medium text-fg shadow-card outline-none transition focus:border-line-strong"
+          >
+            <option value="new">Nova sessão</option>
+            {sessions.map((s) => (
+              <option key={s.id} value={s.id}>
+                {sessionOption(s)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={newSession}
+            title="Nova sessão"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-line bg-surface text-fg shadow-card transition hover:bg-elev active:scale-95"
+          >
+            <Plus className="h-4 w-4" strokeWidth={1.5} />
+          </button>
         </div>
         <CostPill cost={cost} />
       </header>
@@ -294,9 +328,18 @@ function AgentPicker({
   );
 }
 
-/** Título da sessão pro cabeçalho: usa o title, senão um id curto. */
+/** Título da sessão: usa o title, senão um id curto. */
 function sessionLabel(s: SessionView): string {
   return s.title?.trim() || `Sessão ${s.id.slice(0, 8)}`;
+}
+
+/** Rótulo da opção no dropdown: título + data de criação. */
+function sessionOption(s: SessionView): string {
+  const date = new Date(s.createdAt).toLocaleString("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+  return `${sessionLabel(s)} · ${date}`;
 }
 
 /** Custo USD sempre visível no topo; tokens só quando há uso. */
