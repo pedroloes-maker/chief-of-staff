@@ -12,6 +12,7 @@ import AgentsPage from "./pages/AgentsPage";
 import AgentDetailPage from "./pages/AgentDetailPage";
 import ConnectionsPage from "./pages/ConnectionsPage";
 import VaultPage from "./pages/VaultPage";
+import MemoryPage from "./pages/MemoryPage";
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="/w/:slug/agents" element={<AgentsPage />} />
             <Route path="/w/:slug/agents/:id" element={<AgentDetailPage />} />
             <Route path="/w/:slug/connections" element={<ConnectionsPage />} />
+            <Route path="/w/:slug/memory" element={<MemoryPage />} />
             <Route path="/w/:slug/vault" element={<VaultPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>

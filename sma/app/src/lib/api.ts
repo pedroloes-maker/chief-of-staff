@@ -113,6 +113,46 @@ export type VaultView = {
   credentials: VaultCredentialView[];
 };
 
+export type MemoryStoreView = {
+  id: string;
+  slug: string;
+  tier: "short" | "long" | "knowledge";
+  tierLabel: string;
+  description: string | null;
+};
+
+export type MemoryItemView = {
+  id: string;
+  path: string;
+  contentSizeBytes: number;
+  memoryVersionId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemoryContentView = MemoryItemView & { content: string | null };
+
+export type MemoryActorView =
+  | { type: "session"; sessionId: string }
+  | { type: "api"; apiKeyId: string }
+  | { type: "user"; userId: string }
+  | { type: "unknown" };
+
+export type MemoryVersionView = {
+  id: string;
+  memoryId: string;
+  operation: "created" | "modified" | "deleted";
+  createdAt: string;
+  createdBy: MemoryActorView;
+  contentSizeBytes: number | null;
+  redactedAt: string | null;
+  redacted: boolean;
+};
+
+export type MemoryVersionContentView = MemoryVersionView & {
+  content: string | null;
+};
+
 export type PersistedEvent = { seq: number; type: string; payload: unknown };
 
 /** Um evento SSE do stream de mensagem: `event:` + `data:` (JSON). */
@@ -268,6 +308,31 @@ export function useApi() {
       archiveCredential: (slug: string, vaultId: string, credId: string) =>
         request<{ ok: true }>(
           `/api/workspaces/by-slug/${slug}/vaults/${vaultId}/credentials/${credId}/archive`,
+          { method: "POST" },
+        ),
+      listMemoryStores: (slug: string) =>
+        request<MemoryStoreView[]>(
+          `/api/workspaces/by-slug/${slug}/memory-stores`,
+        ),
+      listMemories: (slug: string, storeId: string) =>
+        request<MemoryItemView[]>(
+          `/api/workspaces/by-slug/${slug}/memory-stores/${storeId}/memories`,
+        ),
+      getMemory: (slug: string, storeId: string, memoryId: string) =>
+        request<MemoryContentView>(
+          `/api/workspaces/by-slug/${slug}/memory-stores/${storeId}/memories/${memoryId}`,
+        ),
+      listMemoryVersions: (slug: string, storeId: string, memoryId: string) =>
+        request<MemoryVersionView[]>(
+          `/api/workspaces/by-slug/${slug}/memory-stores/${storeId}/versions?memory_id=${encodeURIComponent(memoryId)}`,
+        ),
+      getMemoryVersion: (slug: string, storeId: string, versionId: string) =>
+        request<MemoryVersionContentView>(
+          `/api/workspaces/by-slug/${slug}/memory-stores/${storeId}/versions/${versionId}`,
+        ),
+      redactMemoryVersion: (slug: string, storeId: string, versionId: string) =>
+        request<MemoryVersionView>(
+          `/api/workspaces/by-slug/${slug}/memory-stores/${storeId}/versions/${versionId}/redact`,
           { method: "POST" },
         ),
     }),

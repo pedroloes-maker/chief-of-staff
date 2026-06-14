@@ -36,6 +36,14 @@ import {
   startGoogleConnect,
 } from "./routes/connections";
 import { archiveVaultCredential, listWorkspaceVaults } from "./routes/vaults";
+import {
+  getMemory,
+  getMemoryVersion,
+  listMemoryVersions,
+  listStoreMemories,
+  listWorkspaceMemoryStores,
+  redactMemoryVersion,
+} from "./routes/memory";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -218,6 +226,75 @@ async function handle(req: Request): Promise<Response> {
       return Response.json(
         await archiveVaultCredential(credArchive[1], credArchive[2], credArchive[3]),
       );
+    }
+
+    // --- Memória (memory stores) — workspace-scoped ---
+
+    // GET /api/workspaces/by-slug/:slug/memory-stores  (lista stores, mirror Neon)
+    const memStores = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/memory-stores$/,
+    );
+    if (memStores && req.method === "GET") {
+      return Response.json(await listWorkspaceMemoryStores(memStores[1]));
+    }
+
+    // POST …/memory-stores/:storeId/versions/:versionId/redact  (redact, §7.4)
+    const memRedact = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/memory-stores\/([^/]+)\/versions\/([^/]+)\/redact$/,
+    );
+    if (memRedact && req.method === "POST") {
+      return Response.json(
+        await redactMemoryVersion(memRedact[1], memRedact[2], memRedact[3]),
+      );
+    }
+
+    // GET …/memory-stores/:storeId/versions/:versionId  (conteúdo da versão)
+    const memVersionDetail = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/memory-stores\/([^/]+)\/versions\/([^/]+)$/,
+    );
+    if (memVersionDetail && req.method === "GET") {
+      return Response.json(
+        await getMemoryVersion(
+          memVersionDetail[1],
+          memVersionDetail[2],
+          memVersionDetail[3],
+        ),
+      );
+    }
+
+    // GET …/memory-stores/:storeId/versions?memory_id=  (histórico da memory)
+    const memVersions = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/memory-stores\/([^/]+)\/versions$/,
+    );
+    if (memVersions && req.method === "GET") {
+      const memoryId = url.searchParams.get("memory_id");
+      if (!memoryId) {
+        return Response.json(
+          { error: "memory_id é obrigatório" },
+          { status: 400 },
+        );
+      }
+      return Response.json(
+        await listMemoryVersions(memVersions[1], memVersions[2], memoryId),
+      );
+    }
+
+    // GET …/memory-stores/:storeId/memories/:memoryId  (conteúdo da memory)
+    const memDetail = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/memory-stores\/([^/]+)\/memories\/([^/]+)$/,
+    );
+    if (memDetail && req.method === "GET") {
+      return Response.json(
+        await getMemory(memDetail[1], memDetail[2], memDetail[3]),
+      );
+    }
+
+    // GET …/memory-stores/:storeId/memories  (lista paths, ao vivo da Anthropic)
+    const memList = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/memory-stores\/([^/]+)\/memories$/,
+    );
+    if (memList && req.method === "GET") {
+      return Response.json(await listStoreMemories(memList[1], memList[2]));
     }
 
     // POST /api/workspaces/by-slug/:slug/agents/sync  (reconcilia com Anthropic)
