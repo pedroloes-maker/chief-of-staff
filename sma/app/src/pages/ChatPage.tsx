@@ -3,6 +3,8 @@ import { useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowUp,
   ChevronRight,
+  CornerDownRight,
+  CornerUpLeft,
   Loader2,
   Mic,
   Paperclip,
@@ -33,10 +35,21 @@ type ToolItem = {
   result?: { text: string; isError: boolean };
 };
 
+// Transferência de/para um sub-agente num coordinator (multiagent). `sent` = o
+// orchestrator delegou (→), `received` = o sub-agente devolveu o resultado (←).
+type TransferItem = {
+  kind: "transfer";
+  id: string;
+  direction: "sent" | "received";
+  agent: string | null;
+  text: string;
+};
+
 type ChatItem =
   | { kind: "user"; id: string; text: string }
   | { kind: "agent"; id: string; text: string }
   | ToolItem
+  | TransferItem
   | { kind: "error"; id: string; message: string };
 
 // Fase ao vivo do turno — só uma aparece por vez no indicador do rodapé.
@@ -148,6 +161,27 @@ export default function ChatPage() {
         // Thinking é efêmero — vira a fase do indicador único, não um item fixo.
         setPhase("thinking");
         break;
+      case "agent.thread_message_sent":
+      case "agent.thread_message_received": {
+        // Transferência de/para sub-agente — dá feedback durante a delegação.
+        setPhase("responding");
+        const id = String(d.id ?? nextId());
+        setItems((prev) =>
+          prev.some((it) => it.id === id)
+            ? prev // dedupe: o stream pode reemitir o mesmo evento
+            : [
+                ...prev,
+                {
+                  kind: "transfer",
+                  id,
+                  direction: d.direction === "received" ? "received" : "sent",
+                  agent: d.agent ? String(d.agent) : null,
+                  text: String(d.text ?? ""),
+                },
+              ],
+        );
+        break;
+      }
       case "agent.tool_use":
       case "agent.custom_tool_use":
       case "agent.mcp_tool_use":
@@ -439,6 +473,8 @@ function Item({ item }: { item: ChatItem }) {
       );
     case "tool":
       return <ToolCard item={item} />;
+    case "transfer":
+      return <TransferCard item={item} />;
     case "error":
       return (
         <div className="rounded-xl border border-line bg-elev px-4 py-2.5 text-sm text-fg">
@@ -487,6 +523,43 @@ function ToolCard({ item }: { item: ToolItem }) {
               </pre>
             </Labeled>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Card de transferência de/para sub-agente (→ delegou / ← respondeu). */
+function TransferCard({ item }: { item: TransferItem }) {
+  const sent = item.direction === "sent";
+  // O resultado (received) abre por padrão — é o dado que o usuário pediu; a
+  // instrução de ida (sent) começa colapsada.
+  const [open, setOpen] = useState(!sent);
+  const agent = item.agent ?? "sub-agente";
+  const label = sent ? "Delegou para" : "Respondeu";
+  const Icon = sent ? CornerDownRight : CornerUpLeft;
+  return (
+    <div className="rounded-xl border border-line bg-elev shadow-card">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left"
+      >
+        <ChevronRight
+          className={`h-3.5 w-3.5 text-fg-faint transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+          strokeWidth={2}
+        />
+        <Icon className="h-3.5 w-3.5 text-fg-muted" strokeWidth={1.5} />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-faint">
+          {label}
+        </span>
+        <span className="font-mono text-xs text-fg">{agent}</span>
+      </button>
+      {open && item.text && (
+        <div className="border-t border-line px-4 py-3">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-surface p-2.5 font-mono text-[11px] leading-relaxed text-fg">
+            {item.text}
+          </pre>
         </div>
       )}
     </div>
@@ -635,6 +708,16 @@ function buildItemsFromPersisted(events: PersistedEvent[]): ChatItem[] {
           tool.result = { text: String(d.text ?? ""), isError: Boolean(d.isError) };
         break;
       }
+      case "agent.thread_message_sent":
+      case "agent.thread_message_received":
+        items.push({
+          kind: "transfer",
+          id: String(d.id ?? `p${e.seq}`),
+          direction: d.direction === "received" ? "received" : "sent",
+          agent: d.agent ? String(d.agent) : null,
+          text: String(d.text ?? ""),
+        });
+        break;
       default:
         break;
     }

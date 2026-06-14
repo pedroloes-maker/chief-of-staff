@@ -283,6 +283,12 @@ const RENDERABLE = new Set([
   "agent.custom_tool_use",
   "agent.mcp_tool_use",
   "agent.mcp_tool_result",
+  // Transferências de/para sub-agentes num coordinator (multiagent). São o único
+  // sinal do trabalho delegado que aflora no event-stream da sessão — as tool
+  // calls internas do sub-agente não aparecem aqui, só a ida (→) e a volta (←).
+  // Renderizá-las dá feedback ao usuário durante a janela de delegação.
+  "agent.thread_message_sent",
+  "agent.thread_message_received",
 ]);
 
 type NormalizedEvent = { type: string; data: Record<string, unknown> };
@@ -309,6 +315,27 @@ function normalize(ev: Record<string, unknown>): NormalizedEvent | null {
       };
     case "agent.thinking":
       return { type, data: { id: ev.id } };
+    case "agent.thread_message_sent":
+      return {
+        type,
+        data: {
+          id: ev.id,
+          direction: "sent",
+          // `to_agent_name` ausente = primary agent; rotulamos como sub-agente.
+          agent: (ev.to_agent_name as string | null) ?? null,
+          text: textOf(ev.content as Array<{ type: string; text?: string }>),
+        },
+      };
+    case "agent.thread_message_received":
+      return {
+        type,
+        data: {
+          id: ev.id,
+          direction: "received",
+          agent: (ev.from_agent_name as string | null) ?? null,
+          text: textOf(ev.content as Array<{ type: string; text?: string }>),
+        },
+      };
     case "agent.tool_use":
     case "agent.custom_tool_use":
       return { type, data: { id: ev.id, name: ev.name, input: ev.input } };
@@ -422,6 +449,30 @@ function sse(controller: ReadableStreamDefaultController, event: string, data: u
   );
 }
 
+// Fase 1 é PT-BR com o executivo no Brasil — fuso único. Quando houver tz por
+// workspace, trocar por uma coluna em `workspaces`.
+const EXEC_TIMEZONE = "America/Sao_Paulo";
+
+/**
+ * Bloco de contexto temporal prefixado na content de cada mensagem enviada à
+ * Anthropic. O orchestrator (`claude-sonnet-4-6`) **não aceita** `system.message`
+ * mid-conversa (a API responde 400), então "agora" entra na própria user.message.
+ * Persistimos só o texto original do usuário — este bloco não vai pra UI nem pro
+ * histórico. Sem ele o agente assume um "hoje" do treino (erra ano e dia da semana).
+ */
+function datetimeContextPrefix(now: Date): string {
+  const full = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: EXEC_TIMEZONE,
+    dateStyle: "full",
+    timeStyle: "short",
+  }).format(now);
+  // sv-SE dá um formato ISO-like (YYYY-MM-DD HH:mm:ss) no fuso pedido.
+  const iso = now
+    .toLocaleString("sv-SE", { timeZone: EXEC_TIMEZONE })
+    .replace(" ", "T");
+  return `[Contexto do sistema — agora é ${full} (${iso}, fuso ${EXEC_TIMEZONE}). Use esta data/hora como "hoje"/"agora" ao resolver referências como "amanhã", "hoje", "semana que vem". Não repita este bloco na resposta.]`;
+}
+
 /**
  * Envia uma mensagem de texto na session e devolve um Response SSE com o stream
  * de eventos do agente até o turno terminar (status_idle). Persiste os eventos
@@ -444,13 +495,16 @@ export async function streamMessage(
   const apiKey = await decryptSecret(ws.anthropicApiKeyEncrypted);
   const client = clientFor(apiKey);
 
-  // Anthropic-first: manda a mensagem. Se falhar, exceção → handler responde
+  // Anthropic-first: manda a mensagem com o contexto de data/hora prefixado na
+  // content (ver datetimeContextPrefix). Se falhar, exceção → handler responde
   // JSON e nada foi persistido.
+  const sent = `${datetimeContextPrefix(new Date())}\n\n${text}`;
   await client.beta.sessions.events.send(row.anthropicSessionId, {
-    events: [{ type: "user.message", content: [{ type: "text", text }] }],
+    events: [{ type: "user.message", content: [{ type: "text", text: sent }] }],
   });
 
-  // Mensagem aceita → persiste o evento do usuário pro reload.
+  // Mensagem aceita → persiste só o texto original do usuário pro reload (o
+  // prefixo de contexto não deve aparecer na UI/histórico).
   await db.insert(sessionEvents).values({
     sessionId: row.id,
     type: "user.message",
@@ -467,6 +521,20 @@ export async function streamMessage(
           payload: n.data,
         });
       };
+
+      // Keep-alive: numa delegação a janela "orchestrator delegou → sub-agente
+      // trabalhando" passa ~20-30s sem nenhum evento renderável. Um comentário
+      // SSE periódico evita que proxies derrubem a conexão ociosa (o que viraria
+      // hang sem `done`). Linhas iniciadas por ":" são ignoradas pelo parser do
+      // client (não têm `event:`/`data:`).
+      const encoder = new TextEncoder();
+      const ping = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": ping\n\n"));
+        } catch {
+          // controller já fechado — ignora
+        }
+      }, 10_000);
 
       try {
         const events = await client.beta.sessions.events.stream(
@@ -505,6 +573,7 @@ export async function streamMessage(
           message: err instanceof Error ? err.message : String(err),
         });
       } finally {
+        clearInterval(ping);
         controller.close();
       }
     },
