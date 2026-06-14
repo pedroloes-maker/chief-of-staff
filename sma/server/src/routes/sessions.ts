@@ -14,6 +14,7 @@ import { decryptSecret } from "../lib/crypto";
 import { getSecret, MCP_VAULT_ID_KEY } from "../lib/secrets";
 import { getWorkspaceGoogleVaultId } from "../lib/google-connections";
 import { priceUsage, type TokenUsage } from "../lib/pricing";
+import { sessionErrorInfo } from "../lib/session-errors";
 import type { AuthContext } from "../lib/auth";
 import { ValidationError } from "./workspaces";
 
@@ -563,8 +564,25 @@ export async function streamMessage(
             sse(controller, "done", { status: "terminated" });
             break;
           }
-          if (type === "session.error" || type === "session.status_error") {
-            sse(controller, "error", { message: "erro na sessão Anthropic" });
+          if (type === "session.status_rescheduled") {
+            // Reagendamento = retentativa após erro transitório (não é o fim do
+            // turno). Mantém feedback na UI e segue aguardando a recuperação.
+            sse(controller, "status", { phase: "retrying" });
+            continue;
+          }
+          if (type === "session.error") {
+            const info = sessionErrorInfo(ev.error);
+            if (info.retry === "retrying") {
+              // Transitório: a sessão vai retentar sozinha. Não aborta — sinaliza
+              // e continua; ela vai a idle (sucesso) ou emite um erro terminal.
+              sse(controller, "status", {
+                phase: "retrying",
+                message: info.message,
+              });
+              continue;
+            }
+            // Terminal/exhausted: surface a mensagem específica e encerra.
+            sse(controller, "error", { message: info.message, kind: info.kind });
             break;
           }
         }

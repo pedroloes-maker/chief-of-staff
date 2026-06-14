@@ -53,7 +53,8 @@ type ChatItem =
   | { kind: "error"; id: string; message: string };
 
 // Fase ao vivo do turno — só uma aparece por vez no indicador do rodapé.
-type Phase = "thinking" | "responding";
+// `retrying` = a sessão teve um erro transitório e está reprocessando.
+type Phase = "thinking" | "responding" | "retrying";
 
 type CostSummary = {
   usd: number;
@@ -209,6 +210,10 @@ export default function ChatPage() {
               : it,
           ),
         );
+        break;
+      case "status":
+        // Sinal de fase do servidor (ex.: reprocessando após erro transitório).
+        if (d.phase === "retrying") setPhase("retrying");
         break;
       case "cost":
         setCost({
@@ -587,12 +592,17 @@ function Code({ value }: { value: unknown }) {
   );
 }
 
-// Indicador único do turno: pensando XOR respondendo, nunca os dois.
+// Indicador único do turno: uma fase por vez, nunca duas.
+const PHASE_LABEL: Record<Phase, string> = {
+  thinking: "Pensando…",
+  responding: "O agente está respondendo…",
+  retrying: "Reprocessando… (tentando de novo)",
+};
 function Pending({ phase }: { phase: Phase }) {
   return (
     <div className="flex items-center gap-2 pl-1 text-[11px] text-fg-faint">
       <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
-      {phase === "thinking" ? "Pensando…" : "O agente está respondendo…"}
+      {PHASE_LABEL[phase]}
     </div>
   );
 }
