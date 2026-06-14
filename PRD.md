@@ -1,6 +1,6 @@
 # PRD — Chief-of-Staff (SMA)
 
-**Status:** v1.1 · 2026-06-11 · decisões #38–41 incorporadas (tunnel MCP, jobs best-effort, AES-GCM, WhatsApp)
+**Status:** v1.2 · 2026-06-14 · decisões #42–45 incorporadas (memória session-scoped + sub-pastas/índice, consolidação via Deployments nativos)
 **Folder:** `sma/` (sibling to the reference app `cma/`)
 **Audience:** Engineering team (internal); later, separate end-user app
 **Language:** Portuguese-only UI for now; multi-language deferred
@@ -178,8 +178,10 @@ Vocabulário praticamente idêntico ao CMA, com deltas onde Managed Agents diver
 | `SessionEvent`         | Subset de eventos persistidos pra UI replay (não duplicamos tudo)                            | **Event**                           |
 | *`Hook`*               | Abstração SMA: trigger (pre_tool_use | session_idle | session_terminated | refresh_failed | custom_event) + action (custom_tool | webhook_relay | enqueue_job) | None |
 | *`HookRun`*            | Histórico de execuções de hook                                                              | None                                |
-| *`Job`*                | Cron expr | one-shot ISO | event-triggered + kickoff_event (user.message ou user.define_outcome) + agent_id | None |
-| *`JobRun`*             | Histórico de execução, com session_id resultante                                            | None                                |
+| `Deployment`           | Mirror de `/v1/deployments` — cron do agente (agent, schedule, initial_events, resources, vault_ids). Os crons que disparam o agente vivem aqui (§11.2) | **Deployment**                      |
+| `DeploymentRun`        | Mirror de `/v1/deployment_runs` — uma tentativa de disparo (session_id em sucesso, error.type em falha) | **Deployment Run**                  |
+| *`Job`*                | (não-Anthropic) Cron expr | one-shot ISO | event-triggered — só pra tarefas que a Anthropic não agenda (socket WhatsApp, polling custo/R2) | None |
+| *`JobRun`*             | Histórico de execução de `Job`, com session_id resultante                                   | None                                |
 | *`Dreaming`*           | Placeholder pra integração futura — TBD aguardando Anthropic GA                              | **Dreaming** (research preview)     |
 | *`File`*               | Upload do operator → R2 (key, mime, size, sha256) + opcionalmente anthropic_file_id          | **File**                            |
 | *`AudioRecording`*     | Audio do chat (sessão executivo ou builder) — R2 key + duration + transcript_text + transcript_provider | None                                |
@@ -226,57 +228,120 @@ Se mirror falha → log + alerta. Reconciliação manual (vir depois).
 **Anthropic Memory Stores** (a API dedicada de memória — não o memory tool client-side `memory_20250818`). Recursos nativos:
 
 - Workspace-scoped, persistente cross-session
-- Montada no container em `/mnt/memory/<store-name>/`
+- Montada no container em `/mnt/memory/<store-name>/`; o agente lê/escreve com as **file tools nativas** (`read`/`write`/`edit`/`glob`/`grep`) — **não existe "memory tool" nem hook** pra isso. A `description` do store + as `instructions` por anexo entram automaticamente no system prompt.
 - Versionamento automático (immutable snapshots por mutação)
 - Audit trail (actor + timestamps + redact por compliance)
-- Até **8 stores por sessão** — folgado pro nosso uso
+- Até **8 stores por sessão**
+
+### 7.1.1 Ponto de anexo — memória é da SESSÃO, não do agente
+
+Decisão travada em 2026-06-14 (ancorada na Claude API). Os stores anexam em
+`sessions.create({ resources: [...] })`, **só no create** (`sessions.resources.add()`
+não aceita `memory_store`). Logo:
+
+- **Coupling agente↔memória é na nossa camada.** Quem decide *quais* stores entram
+  numa sessão é o nosso `createSession`, olhando o **agente-alvo** via a tabela
+  `agentMemoryStores` (agent ↔ store + access + tier). "Carregar a memória do agente"
+  = montar os stores certos quando a sessão daquele agente é criada.
+- **Multiagent compartilha o filesystem.** Numa sessão coordinator, o orchestrator e
+  **todos os sub-agentes** rodam na mesma sessão e enxergam **os mesmos mounts** de
+  `/mnt/memory/`. **Não há memória isolada por sub-agente** na API — o isolamento por
+  domínio (calendário/email/arquivos) é por **sub-pasta + prompt**, não por permissão
+  de FS. A sessão do orchestrator monta a união dos stores que ele e seus sub-agentes
+  precisam; cada sub-agente escreve só na sua sub-pasta por convenção.
+- **Deployments** (§7.3, §11) também aceitam `resources` com memory stores — é assim
+  que a consolidação agendada monta `short`+`long` na sessão do builder.
 
 ### 7.2 Tiers e estratégia
 
-Por executivo (= por workspace), criamos múltiplas memory stores. **Não há limite de uma por tier** — você pediu poder criar várias e associá-las ao workspace.
+Por executivo (= por workspace) criamos **3 stores por ciclo de vida** (não por
+domínio). Domínios (calendário/email/arquivos) têm o **mesmo owner e lifecycle**, então
+viram **sub-pastas/arquivos pequenos dentro do `short`** — não stores separados (a
+própria Anthropic recomenda múltiplos stores só quando owner/lifecycle diferem, e o
+limite é 8/sessão).
 
 | Tier label   | Cobre                                                | Granularidade típica            | Cadência                                      |
 | ------------ | ---------------------------------------------------- | ------------------------------- | --------------------------------------------- |
-| `short`      | Dia / semana corrente                                 | Files day-stamped               | Escrita contínua durante chat / cron          |
-| `long`       | Meses / quarters / anos                              | Files theme-stamped              | **Consolidação dominical** (cron — abaixo, configurável)  |
-| `knowledge`  | Base de conhecimento somente-leitura (briefs, docs) | Files theme-stamped              | Curadoria manual                              |
+| `short`      | Hoje / esta semana (working memory)                  | Arquivos pequenos por domínio   | Escrita contínua durante as sessões           |
+| `long`       | Meses / quarters / anos + **índice**                 | Rollups + `index.md`            | **Consolidação via Deployment** (§7.3)        |
+| `knowledge`  | Base de conhecimento somente-leitura (briefs, docs) | Files theme-stamped             | Curadoria manual                              |
 
-Configuração na sessão:
+**Layout dos arquivos** (sub-pastas resolvem o "memória de trabalho pequena por
+domínio" sem estourar o limite de stores):
+
+```
+/mnt/memory/short/            (working memory — rw)
+  calendar/2026-06-14.md
+  email/2026-06-14.md
+  files/2026-06-14.md         (arquivos consultados recentemente)
+  builder/2026-06-14.md       (o que o builder ajustou no agente)
+  geral/2026-06-14.md
+/mnt/memory/long/             (consultável — ro pro orchestrator, rw só no consolidador)
+  index.md                    ← 1 linha de resumo por dia/assunto (lookup rápido)
+  2026-06-13.md               ← rollup do dia
+  2026-W24.md                 ← rollup da semana
+/mnt/memory/knowledge/        (curado — ro)
+```
+
+O **`long/index.md`** é o que evita varrer todos os arquivos diários: quando o
+executivo diz "lembra daquele negócio da semana passada", o orchestrator lê o índice
+(uma linha por dia), acha a referência, e abre só o arquivo específico.
+
+Configuração na sessão (montada pelo `createSession` conforme o agente-alvo):
 
 ```json
 resources: [
   { "type": "memory_store", "memory_store_id": "memstore_<exec>_short",
     "access": "read_write",
-    "instructions": "Curto prazo: o que o executivo está vivendo HOJE e nesta semana. Use arquivos com nome YYYY-MM-DD.md. Cheque antes de responder. Escreva continuamente." },
+    "instructions": "Working memory (hoje/esta semana). Escreva em arquivos pequenos por domínio: short/calendar/, short/email/, short/files/, short/builder/, short/geral/ — sempre YYYY-MM-DD.md. Cada sub-agente só na sua sub-pasta. Cheque antes de responder; escreva continuamente." },
   { "type": "memory_store", "memory_store_id": "memstore_<exec>_long",
-    "access": "read_write",
-    "instructions": "Longo prazo: meses, quarters, anos. Identidade estável, temas recorrentes. Cheque pra contextualizar. Não escreva aqui no dia a dia — espere o consolidador." },
+    "access": "read_only",
+    "instructions": "Longo prazo. Leia long/index.md PRIMEIRO (1 linha por dia) pra achar o que precisa, depois abra só o arquivo específico. Não escreva aqui — quem escreve é o consolidador." },
   { "type": "memory_store", "memory_store_id": "memstore_<exec>_knowledge",
     "access": "read_only",
     "instructions": "Base de conhecimento curada. Use como referência quando o executivo perguntar coisas factuais sobre projetos / pessoas / decisões anteriores." }
 ]
 ```
 
-### 7.3 Consolidação — dois ciclos
+(Na sessão do **consolidador** — o builder via Deployment, §7.3 — o `long` entra como
+`read_write`.)
 
-**Curto prazo (diário, madrugada — default 03h).** Reorganiza a `short` do dia anterior antes do dia novo começar:
+### 7.3 Consolidação — via Deployments nativos
 
-1. Cron `0 3 * * *` cria sessão targeting o **builder sub-agent** (§8, não o orchestrator)
-2. Builder lê arquivos do dia anterior na `short`
-3. Reestrutura/comprime: descarta ruído (saudações triviais, repetições), preserva eventos relevantes, decisões, follow-ups pendentes
-4. Reescreve em `YYYY-MM-DD.md` enxuto
+A consolidação roda em **Anthropic Scheduled Deployments** (§11) — server-side, sempre
+ligado, sem depender da nossa máquina. Cada deployment "bunda" agente + environment +
+`resources` (os stores) + `vault_ids` + `schedule` (cron + timezone) + `initial_events`,
+e cada disparo cria uma sessão autônoma. Testável manual com `deployments.run()`.
 
-**Longo prazo (semanal — default domingo 23h).** Consolida a semana inteira:
+**Curto prazo (diário, 00:00 `America/Sao_Paulo`).** Reorganiza o `short` do dia antes
+do dia novo começar:
 
-1. Cron `0 23 * * 0` cria sessão targeting o builder
-2. Builder inicia com `user.define_outcome`:
-   > "Resuma os principais eventos da semana em um arquivo `YYYY-WW.md` na memória de longo prazo. Capture decisões, mudanças de status, novos compromissos, padrões emergentes."
-3. Escreve no `long`
-4. Opcional: arquiva arquivos antigos do `short` (>4 semanas)
+1. Deployment `0 0 * * *` cria sessão targeting o **builder** (§8, não o orchestrator),
+   montando `short(rw)` + `long(rw)`
+2. `initial_events`: ler `short/**` (todas as sub-pastas do dia), comprimir por domínio
+   (descartar ruído — saudações triviais, repetições; preservar eventos relevantes,
+   decisões, follow-ups pendentes)
+3. Escrever o rollup do dia em `long/YYYY-MM-DD.md` e **atualizar `long/index.md`** com
+   1 linha de resumo daquele dia
+4. Limpar/enxugar os arquivos do `short` consolidados
 
-**Configurabilidade.** Operator pode mudar cadências via chat com orchestrator → builder altera o `Job.schedule` correspondente. Quando o workspace é provisionado, jobs padrão são criados com os defaults acima.
+**Longo prazo (semanal, domingo 23:00).** Consolida a semana:
 
-**Consolidação mid-session.** Durante uma sessão com o executivo, se o agente detectar mudança significativa de contexto (decisão importante, evento marcante), pode chamar uma tool `consolidate_now(scope: "short"|"long", reason)` que dispara consolidação imediata sem esperar cron — útil pra capturar momentos com hot context.
+1. Deployment `0 23 * * 0` cria sessão targeting o builder (`long` rw)
+2. `initial_events`: "Resuma os principais eventos da semana em `long/YYYY-WW.md` —
+   decisões, mudanças de status, novos compromissos, padrões emergentes — e atualize o
+   `index.md`."
+3. Opcional: arquiva arquivos antigos do `short` (>4 semanas)
+
+**Configurabilidade.** Operator muda cadência via chat com orchestrator → builder altera
+o `schedule` do Deployment correspondente (`deployments.update`/pause/unpause). No
+provisionamento, os deployments padrão são criados com os defaults acima.
+
+**Consolidação mid-session (opcional).** Durante uma sessão com o executivo, se o agente
+detectar mudança significativa de contexto, pode chamar uma custom tool
+`consolidate_now(scope, reason)` que dispara consolidação imediata sem esperar o cron —
+útil pra capturar momentos com hot context. É um acelerador opcional; o backbone é
+file-tools nativo (escrita contínua) + Deployment (consolidação).
 
 Tudo via memory store API; versionamento e audit nativos da Anthropic.
 
@@ -375,8 +440,8 @@ O builder tem `read_write` em todas as memory stores do workspace via standard f
 
 1. **Orchestrator agent** — system prompt em PT-BR, multiagent roster apontando pro builder + sub-agents iniciais (email/calendar triage opcionais), MCP servers (sma + gmail/drive/cal), skills built-in (pdf/docx/xlsx)
 2. **Builder sub-agent** — system prompt focado em configuração + manutenção, custom tools de control-plane, skills `skill_sma_config` + `skill_sma_memory_consolidation`
-3. **Memory stores defaults** — `memstore_<slug>_short`, `memstore_<slug>_long`, `memstore_<slug>_knowledge`
-4. **Jobs defaults** — consolidação curto 03h, consolidação longo dom 23h
+3. **Memory stores defaults** — `memstore_<slug>_short`, `memstore_<slug>_long`, `memstore_<slug>_knowledge` (+ seed do `long/index.md`)
+4. **Deployments defaults** — consolidação curto 00:00 diário + longo dom 23h, targeting o builder (§7.3, §11.2)
 
 Iteramos os system prompts e configs direto no script enquanto validamos com você no `/chat`.
 
@@ -451,6 +516,13 @@ Anthropic precisa **alcançar** nossos MCP servers em session time — localhost
 
 Anthropic Managed Agents **não tem primitivo literalmente chamado "hooks"**, mas oferece todos os building blocks. SMA expõe uma abstração `Hook` unificada na UI; backend traduz pros primitivos certos.
 
+> **Memória ≠ hook.** Ler/escrever memória **não** passa por hook: o agente faz isso
+> nativamente com file tools no mount `/mnt/memory/` durante a sessão (§7), e a
+> consolidação é um **Deployment** agendado (§7.3, §11). Hooks/webhooks entram como
+> *aceleradores opcionais* de memória — ex.: a custom tool `consolidate_now`
+> (consolidar no meio da sessão) ou um webhook `session.status_idled`/`_terminated`
+> pra um flush leve pós-sessão. Nenhum é necessário pro fluxo básico de memória.
+
 ### 10.1 Mapa Anthropic → SMA Hook
 
 | SMA Hook trigger              | Anthropic primitivo backing                                              |
@@ -484,6 +556,15 @@ Você falou em **oferecer os padrões da Antropic**. Implementação:
 
 ## 11. Jobs (cron + proativo)
 
+> **Virada v1.2 (decisão #45):** os crons que **disparam o agente** (consolidação,
+> brief matinal, email check, heartbeat) rodam em **Anthropic Scheduled Deployments
+> nativos** — server-side, sempre ligados, sem depender da nossa máquina. O **worker
+> Postgres local** (§11.2) deixa de ser o caminho primário e fica só pra o que a
+> Anthropic não agenda: **tarefas não-Anthropic** (manter o socket WhatsApp/Baileys
+> vivo, polling de custo/uso enquanto não há webhook, polling de storage R2). O modelo
+> `Job`/`JobRun` abaixo continua válido pra essas tarefas; pros crons do agente, o
+> mirror é `Deployment`/`DeploymentRun` (§5.1, §11.2).
+
 ### 11.1 Modelo
 
 ```
@@ -500,42 +581,55 @@ JobRun
   session_id (Anthropic), status, summary, cost_estimate
 ```
 
-### 11.2 Runtime — Bun + Postgres polling
+### 11.2 Runtime
 
-Bun não tem queue/cron native. Worker é um processo separado:
+**Primário — Anthropic Scheduled Deployments (crons do agente).** Um deployment
+(`depl_…`) bunda `agent` + `environment_id` + `resources` (memory stores etc.) +
+`vault_ids` + `schedule` (`{type:"cron", expression, timezone}`, IANA, wall-clock
+literal) + `initial_events` (o `user.message`/`user.define_outcome` de arranque). Cada
+disparo cria uma sessão autônoma na infra da Anthropic — **always-on, não depende da
+nossa máquina**. Cada tentativa vira um `DeploymentRun` (`drun_…`) pra auditoria
+(sucesso carrega `session_id`; falha carrega `error.type`). `deployments.run()` dispara
+manual pra testar antes do cron; `pause`/`unpause`/`archive` controlam o ciclo de vida.
+Máx 1000 deployments/org; pode haver até ~10s de jitter.
 
-```
-bun run scripts/job-worker.ts
-```
+> ⚠️ **DST:** wall-clock literal — horários inexistentes no spring-forward são pulados,
+> e os que ocorrem 2× no fall-back disparam 2×. Por isso a consolidação diária roda
+> **00:00** (fora da janela 1–3h) em `America/Sao_Paulo`.
 
-Lógica:
-- `setInterval(60_000)`
-- Cada tick: `SELECT * FROM jobs WHERE enabled AND next_run_at <= now()`
-- Por job: cria session, manda `kickoff_event`, persiste `JobRun`, atualiza `next_run_at` pelo cron expr (lib `cron-parser`)
-- Sessões longas: usamos webhook (`session.status_terminated`) pra fechar o JobRun async; enquanto não houver hostname público estável, polling de status fecha o JobRun
-
-**Fase 1 (local-only) — best-effort, aceito:** o worker roda na máquina do operator; jobs disparam só com a máquina acordada. Próximo passo: **Mac mini always-on** dedicado rodando o worker (e o tunnel §9.5). Depois: deploy cloud (Fase 2).
+**Secundário — worker Bun + Postgres polling (só tarefas não-Anthropic).** Processo
+separado (`bun run scripts/job-worker.ts`), `setInterval(60_000)`, lê
+`SELECT * FROM jobs WHERE enabled AND next_run_at <= now()` e roda o que **não** é
+sessão-de-agente: manter o socket WhatsApp/Baileys vivo, polling de custo/uso (§15.1) e
+de storage R2 (§15.4). Continua **best-effort em Fase 1** (roda só com a máquina
+acordada) — caminho: Mac mini always-on, depois cloud. Os crons do agente já não
+dependem disso.
 
 ### 11.3 Casos de uso iniciais (defaults — todos configuráveis via builder)
+
+Todos disparam o agente → rodam como **Deployments nativos** (§11.2):
 
 | Caso                                                                          | Schedule default              | Target agent     |
 | ----------------------------------------------------------------------------- | ----------------------------- | ---------------- |
 | **Heartbeat** — check rápido pra ver se tem algo novo                          | cada 30 min                   | orchestrator     |
 | **Email check matinal** — lê inbox via Gmail MCP, separa relevante            | 8h diário (`0 8 * * *`)       | orchestrator     |
 | **Brief matinal**                                                              | 6h diário (`0 6 * * *`)       | orchestrator     |
-| **Consolidação curto prazo** (madrugada)                                      | 3h diário (`0 3 * * *`)        | **builder**      |
+| **Consolidação curto prazo**                                                  | **00:00 diário (`0 0 * * *`)** | **builder**      |
 | **Consolidação longo prazo** (semanal)                                        | dom 23h (`0 23 * * 0`)        | **builder**      |
 | **Automações configuradas pelo agente em runtime**                            | configurável                  | depende          |
 
-Todas as schedules são editáveis via `sma_update_job` no builder. Quando o operator fala "muda a consolidação pra 4h da manhã", o builder altera o `Job.schedule` correspondente.
+Todas as schedules são editáveis via builder (`deployments.update`/pause/unpause). Quando
+o operator fala "muda a consolidação pra 4h da manhã", o builder altera o `schedule` do
+Deployment correspondente.
 
 ### 11.4 Auto-configuração pelo agente (OpenClaw-style)
 
 Quando o operator (via chat) diz "lê meu email todo dia às 8h":
 
 1. Orchestrator → builder
-2. Builder chama `sma_create_job(name="email morning", agent_id=email_triage, schedule="0 8 * * *", kickoff_event={type: "user.message", content: "Triage inbox..."})`
-3. Job ativo. Operator vê na página `/jobs`.
+2. Builder cria um **Deployment** (`deployments.create`) targeting o agente certo, com
+   `schedule="0 8 * * *"` e `initial_events=[{type:"user.message", content:"Triage inbox..."}]`
+3. Deployment ativo. Operator vê na página `/jobs` (mirror `Deployment`/`DeploymentRun`).
 
 ---
 
@@ -826,10 +920,11 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 
 ### Fase 3 — Memory + hooks + jobs + R2
 
-- Memory stores (criar, attach, browser UI, versions, redact)
+- Memory stores: browser UI + versions + redact ✅ (SMA-23)
+- Memória nas sessões: `createSession` anexa stores por agente (§7.1.1) + sub-pastas no `short` + `long/index.md` + notas de mount nos prompts + `skill_sma_memory`
 - Skills + custom tools (CRUD + attach a agent)
 - Hooks abstraction (UI + tradução para permission_policy/custom_tool/webhook)
-- Jobs system (worker Postgres-backed + página + builder pode criar)
+- Deployments nativos: consolidação (00:00 diário + dom 23h) + demais crons do agente, mirror `Deployment`/`DeploymentRun` + página; worker Postgres local só pra tarefas não-Anthropic (§11.2)
 - Cloudflare R2 wiring + file upload pipeline
 - Audio recording + Whisper STT pipeline
 
@@ -838,7 +933,7 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 - Drive + Calendar MCP connectors
 - Página de custos (`/w/:slug/costs`) + admin `/admin/costs`
 - Webhooks endpoint completo + lifecycle hooks atrelados (requer hostname público — §9.5)
-- Consolidação cron (curto/madrugada 03h + longo/dom 23h via builder) + `skill_sma_memory_consolidation`
+- `skill_sma_memory_consolidation` afinada (lógica de compressão short→long + manutenção do índice) sobre os Deployments da Fase 3
 - Canal WhatsApp via Baileys: worker + QR pairing em `/connections` + roteamento inbound/outbound pra session do orchestrator (§13.2)
 
 ### Fase 5 — Hardening + abstrações (a discutir)
@@ -868,9 +963,9 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 | 11  | Time todo acessa todos os workspaces (RBAC granular fica pra depois)                                 |
 | 12  | Primeiro ticket: infra-only                                                                          |
 | 13  | MCP server próprio: Fase 1, espelhando padrão do CMA (sem builder tools no MCP)                      |
-| 14  | Jobs: Postgres queue + worker Bun (`setInterval`) — Bun não tem queue native                         |
+| 14  | Jobs: Postgres queue + worker Bun (`setInterval`). **v1.2 (#45): só pra tarefas não-Anthropic; crons do agente via Deployments nativos** |
 | 15  | Memória: múltiplas memory stores por workspace; tiers `short` / `long` / `knowledge`                 |
-| 16  | Consolidação semanal short → long via cron                                                           |
+| 16  | Consolidação semanal short → long via cron. **v1.2 (#45): roda como Deployment nativo**               |
 | 17  | Memory versioning: usar nativo da Anthropic                                                          |
 | 18  | Vault estendido: MCP credentials (Anthropic) + SecretEntry SMA-side (AES-256-GCM via `crypto.subtle`) per-workspace |
 | 19  | Hooks: abstração SMA traduzida pros primitivos Anthropic (permission_policy + tool_confirmation + webhooks + custom_tools) |
@@ -888,14 +983,18 @@ Fase 1: nosso time absorve custos; rastreamos via `CostEntry` mas não cobra nin
 | 31  | Anthropic API key: **per-workspace** (você conecta cada uma manualmente quando criar o workspace)    |
 | 32  | Google OAuth: 1 OAuth client SMA-side; cada conexão grava refresh token em vault Anthropic (CMA-style) |
 | 33  | Agent templates como feature: **Fase 2** (depois de validar 1 workspace manual)                       |
-| 34  | Consolidação de memória: **curto** diário 03h, **longo** dom 23h, configurável via builder            |
+| 34  | Consolidação de memória: **curto diário 00:00** (v1.2; era 03h), **longo** dom 23h, configurável via builder — via Deployment (#45) |
 | 35  | Builder sub-agent: 2 capabilities (configuração + manutenção/consolidação) com skills dedicadas       |
 | 36  | Reachability MCP em Fase 1: **tunnel** (cloudflared/ngrok, hostname estável — padrão CMA, §9.5); MCP Tunnels da Anthropic quando liberados pra nós |
 | 37  | TTS (resposta em voz): fora de escopo Fase 1 — só STT-in, text-out                                    |
 | 38  | Canal WhatsApp do executivo: Fase 1 via **Baileys** (não-oficial, QR pairing), Fase 2 migra pra **Meta WhatsApp Business Cloud API**; entidade `Channel` abstrai o provider |
 | 39  | Linguagem visual: monocromático "polished platinum" (§16.3) — hairlines, cantos arredondados (cards 20px, botões pílula), vidro fosco só em chrome; mesma família material do `chief/` |
-| 40  | Jobs em Fase 1: **best-effort** na máquina do operator (roda só acordada — aceito); próximo passo **Mac mini always-on** rodando worker + tunnel; depois deploy cloud |
+| 40  | Worker local em Fase 1: **best-effort** na máquina do operator (roda só acordada). **v1.2 (#45): só tarefas não-Anthropic; crons do agente são always-on via Deployments** — próximo passo Mac mini só pro worker não-Anthropic + tunnel |
 | 41  | Custos em Fase 1: **polling** de usage da session (webhook assume quando houver hostname público estável) |
+| 42  | Memória é **session-scoped** (anexa em `sessions.create.resources`, só no create); coupling agente↔memória na nossa camada via `createSession` + `agentMemoryStores`. Multiagent: todos os threads compartilham os mounts — **sem isolamento de memória por sub-agente** (§7.1.1) |
+| 43  | Domínios (calendário/email/arquivos/builder) são **sub-pastas/arquivos pequenos dentro do `short`**, não stores separados (mesmo owner/lifecycle; limite 8 stores/sessão) — §7.2 |
+| 44  | `long/index.md` (1 linha por dia/assunto) pra lookup rápido sem varrer todos os arquivos diários — §7.2 |
+| 45  | Crons que **disparam o agente** (consolidação 00:00 + dom 23h, brief, email, heartbeat) via **Anthropic Scheduled Deployments nativos** (server-side, always-on); worker Postgres local só pra tarefas não-Anthropic (WhatsApp, polling custo/R2). Supera #14/#16/#34/#40 — §11.2 |
 
 ---
 
