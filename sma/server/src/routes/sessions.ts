@@ -182,6 +182,25 @@ export async function getSession(id: string): Promise<SessionView | null> {
   return row ? toView(row) : null;
 }
 
+/**
+ * Interrompe o turno em andamento da sessão. Manda `user.interrupt` sem
+ * `session_thread_id` — interrompe TODOS os threads (orchestrator + sub-agentes
+ * num coordinator), pausando a execução e devolvendo o controle ao usuário.
+ * Usado pelo botão stop e pelo "+"/troca de sessão durante streaming.
+ */
+export async function interruptSession(id: string): Promise<{ ok: true }> {
+  const row = await loadSessionRow(id);
+  if (!row) throw new ValidationError("session não encontrada");
+  const ws = await loadWorkspaceById(row.workspaceId);
+  if (!ws) throw new ValidationError("workspace da session não encontrado");
+  const apiKey = await decryptSecret(ws.anthropicApiKeyEncrypted);
+  const client = clientFor(apiKey);
+  await client.beta.sessions.events.send(row.anthropicSessionId, {
+    events: [{ type: "user.interrupt" }],
+  });
+  return { ok: true };
+}
+
 /** Eventos renderáveis persistidos, em ordem, pra reload do chat. */
 export async function listSessionEvents(
   id: string,

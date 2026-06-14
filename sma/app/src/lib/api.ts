@@ -263,6 +263,10 @@ export function useApi() {
         }),
       getSessionEvents: (sessionId: string) =>
         request<PersistedEvent[]>(`/api/sessions/${sessionId}/events`),
+      interruptSession: (sessionId: string) =>
+        request<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {
+          method: "POST",
+        }),
       streamMessage,
       listAgents: (slug: string) =>
         request<AgentSummary[]>(`/api/workspaces/by-slug/${slug}/agents`),
