@@ -18,7 +18,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/client";
-import { agents, workspaces } from "../db/schema";
+import { workspaces } from "../db/schema";
 import { decryptSecret } from "./crypto";
 
 // ─── Catálogo de serviços ───────────────────────────────────────────────────
@@ -446,120 +446,11 @@ export async function getWorkspaceGoogleVaultId(
   }
 }
 
-export interface WorkspaceMcpServer {
-  name: string;
-  type: "url";
-  url: string;
-}
-
-/**
- * Lista os MCP servers Google ativos do workspace: uma entrada por credential
- * não-arquivada cujo mcp_server_url casa com um serviço configurado. O route de
- * sessões usa isso pra popular `mcp_servers` no sessions.create.
- */
-export async function listWorkspaceMcpServers(
-  workspaceId: string,
-): Promise<WorkspaceMcpServer[]> {
-  try {
-    const client = await clientForWorkspaceId(workspaceId);
-    if (!client) return [];
-    const vault = await findGoogleVault(workspaceId, client);
-    if (!vault) return [];
-    const creds = await listVaultCredentials(vault.id, client);
-
-    const out: WorkspaceMcpServer[] = [];
-    for (const service of SERVICES) {
-      const mcpUrl = serviceMcpUrl(service);
-      if (!mcpUrl) continue;
-      const cred = creds.find(
-        (c) =>
-          !c.archived_at &&
-          c.auth.type === "mcp_oauth" &&
-          c.auth.mcp_server_url === mcpUrl,
-      );
-      if (!cred) continue;
-      out.push({ name: service, type: "url", url: mcpUrl });
-    }
-    return out;
-  } catch (err) {
-    console.warn(
-      `[connections] falha ao listar MCP servers de ${workspaceId}:`,
-      err instanceof Error ? err.message : err,
-    );
-    return [];
-  }
-}
-
-const GOOGLE_SERVICE_NAMES = new Set<string>(SERVICES);
-
-/**
- * Reconcilia o orchestrator do workspace com os MCP servers Google conectados:
- * registra um `mcp_server` (url) + um `mcp_toolset` (always_allow) por serviço
- * conectado, preservando os servers não-Google (ex. `sma`) e as tools não-MCP
- * (agent_toolset, custom). Idempotente — chamado após connect/disconnect.
- *
- * `sessions.create` não aceita `mcp_servers`, então eles têm que viver na
- * definição do agente; a sessão só anexa a `vault_ids` (ver sessions.ts).
- */
-export async function reconcileGoogleMcpOnOrchestrator(
-  workspaceId: string,
-): Promise<void> {
-  const [orch] = await db
-    .select()
-    .from(agents)
-    .where(
-      and(
-        eq(agents.workspaceId, workspaceId),
-        eq(agents.role, "orchestrator"),
-        eq(agents.status, "active"),
-      ),
-    );
-  if (!orch) return;
-
-  const client = await clientForWorkspaceId(workspaceId);
-  if (!client) return;
-
-  const live = await client.beta.agents.retrieve(orch.anthropicAgentId);
-  const googleServers = await listWorkspaceMcpServers(workspaceId);
-
-  // Servers desejados = não-Google atuais (ex. `sma`) + Google conectados.
-  const keptServers = (live.mcp_servers ?? [])
-    .filter((s) => !GOOGLE_SERVICE_NAMES.has(s.name))
-    .map((s) => ({ name: s.name, type: "url" as const, url: s.url }));
-  const desiredServers = [...keptServers, ...googleServers];
-
-  // Tools: preserva não-MCP (agent_toolset minimal, custom completo) e
-  // reconstrói um mcp_toolset (always_allow) por server desejado.
-  const keptTools: Anthropic.Beta.Agents.AgentUpdateParams["tools"] = [];
-  for (const t of live.tools ?? []) {
-    if (t.type === "agent_toolset_20260401") {
-      keptTools.push({ type: "agent_toolset_20260401" });
-    } else if (t.type === "custom") {
-      keptTools.push({
-        type: "custom",
-        name: t.name,
-        description: t.description,
-        input_schema: t.input_schema,
-      });
-    }
-    // mcp_toolset: descartado e reconstruído abaixo.
-  }
-  const mcpToolsets = desiredServers.map((s) => ({
-    type: "mcp_toolset" as const,
-    mcp_server_name: s.name,
-    default_config: {
-      enabled: true,
-      permission_policy: { type: "always_allow" as const },
-    },
-  }));
-
-  const updated = await client.beta.agents.update(orch.anthropicAgentId, {
-    version: live.version,
-    mcp_servers: desiredServers,
-    tools: [...(keptTools ?? []), ...mcpToolsets],
-  });
-  await db
-    .update(agents)
-    .set({ version: String(updated.version), updatedAt: new Date() })
-    .where(eq(agents.id, orch.id));
-}
+// NOTA (SMA-21): a partir do split em sub-agents de domínio, os MCP servers
+// Google vivem nos sub-agents `*_gmail_agent` / `*_drive_agent` /
+// `*_calendar_agent` (criados pelo provision), não no orchestrator. Conectar/
+// desconectar mexe só na vault (credential casa por mcp_server_url), então não
+// há mais reconcile do orchestrator no connect — o `reconcileGoogleMcpOnOrchestrator`
+// e o `listWorkspaceMcpServers` foram removidos. A migração de um orchestrator
+// legado (que ainda carregue os MCP Google do SMA-18) é feita rodando
+// `provision-workspace.ts --reconcile`, que limpa os servers e seta o roster.

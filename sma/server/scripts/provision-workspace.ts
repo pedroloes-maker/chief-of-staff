@@ -29,9 +29,13 @@ import { rotateSmaMcpToken } from "../src/lib/smaMcp";
 import { BUILDER_CUSTOM_TOOLS } from "../src/provisioning/builderTools";
 import {
   BUILDER_SYSTEM_PROMPT,
+  CALENDAR_AGENT_SYSTEM_PROMPT,
+  DRIVE_AGENT_SYSTEM_PROMPT,
+  GMAIL_AGENT_SYSTEM_PROMPT,
   ORCHESTRATOR_SYSTEM_PROMPT,
 } from "../src/provisioning/prompts";
 import { SMA_CUSTOM_SKILLS, type SkillSpec } from "../src/provisioning/skills";
+import { serviceMcpUrl, type Service } from "../src/lib/google-connections";
 
 // Fase 1: Sonnet pra orchestrator+builder mantém custo viável (~5× mais barato
 // que Opus) sem perder capacidade pro trabalho de raciocínio/config. Sub-agents
@@ -39,6 +43,45 @@ import { SMA_CUSTOM_SKILLS, type SkillSpec } from "../src/provisioning/skills";
 // Opus em produção se a qualidade exigir.
 const BUILDER_MODEL = "claude-sonnet-4-6";
 const ORCHESTRATOR_MODEL = "claude-sonnet-4-6";
+
+// Sub-agents de domínio Google: tarefas-folha mecânicas (chamar a tool MCP e
+// devolver), então nascem em Haiku (~15× mais barato que Opus, ~3× que Sonnet).
+// Esse é o ganho de custo direto do split — o orchestrator (Sonnet) coordena, os
+// sub-agents (Haiku) executam o trabalho de domínio em threads isoladas.
+const SUBAGENT_MODEL = "claude-haiku-4-5";
+
+// Os 3 sub-agents de domínio Google, cada um com seu prompt. Só são criados se a
+// MCP URL do serviço estiver no .env (serviceMcpUrl). O `name` do MCP server e a
+// referência do mcp_toolset usam o próprio nome do serviço.
+const DOMAIN_SUBAGENTS: { service: Service; system: string }[] = [
+  { service: "gmail", system: GMAIL_AGENT_SYSTEM_PROMPT },
+  { service: "drive", system: DRIVE_AGENT_SYSTEM_PROMPT },
+  { service: "calendar", system: CALENDAR_AGENT_SYSTEM_PROMPT },
+];
+
+// Toolset enxuto de um sub-agent de domínio: o mcp_toolset do seu serviço
+// (always_allow, senão trava sem UI de confirmação na Fase 1) + só o file tool
+// `read`, que a runtime exige pra abrir outputs MCP grandes (>100K tokens são
+// offloaded pra arquivo). Sem bash/write/web — o sub-agent só relaia a tool.
+function domainSubagentTools(
+  service: Service,
+): Anthropic.Beta.Agents.AgentCreateParams["tools"] {
+  return [
+    {
+      type: "agent_toolset_20260401",
+      default_config: { enabled: false },
+      configs: [{ name: "read", enabled: true }],
+    },
+    {
+      type: "mcp_toolset",
+      mcp_server_name: service,
+      default_config: {
+        enabled: true,
+        permission_policy: { type: "always_allow" },
+      },
+    },
+  ];
+}
 
 const BUILTIN_SKILLS_ORCHESTRATOR: { skill_id: "pdf" | "docx" | "xlsx" }[] = [
   { skill_id: "pdf" },
@@ -184,7 +227,7 @@ async function ensureMemoryStore(
 
 type AgentCreateInput = {
   slug: string;
-  role: "orchestrator" | "builder";
+  role: "orchestrator" | "builder" | "sub_agent";
   model: string;
   system: string;
   tools?: Anthropic.Beta.Agents.AgentCreateParams["tools"];
@@ -421,7 +464,41 @@ async function main(): Promise<void> {
     reconcile,
   );
 
-  // 4. Orchestrator agent (multiagent: builder; MCP: sma; built-in skills).
+  // 3c. Sub-agents de domínio Google (gmail/drive/calendar). Cada um carrega só
+  // o seu MCP server + o file tool `read`, em Haiku. O orchestrator (coordinator)
+  // delega pra eles em vez de carregar todos os MCPs. A credencial OAuth vive na
+  // vault Google do workspace (casa por URL), então o sub-agent funciona assim
+  // que o serviço é conectado em Conexões — não precisa re-provisionar. Só são
+  // criados os serviços com MCP URL no .env.
+  const domainSubAgentIds: string[] = [];
+  for (const { service, system } of DOMAIN_SUBAGENTS) {
+    const mcpUrl = serviceMcpUrl(service);
+    if (!mcpUrl) {
+      log(
+        "info",
+        `${service}: sem MCP URL no .env — sub-agent de domínio não criado`,
+      );
+      continue;
+    }
+    const sub = await ensureAgent(
+      client,
+      ws.id,
+      {
+        slug: `${ws.slug}_${service}_agent`,
+        role: "sub_agent",
+        model: SUBAGENT_MODEL,
+        system,
+        mcpServers: [{ name: service, type: "url", url: mcpUrl }],
+        tools: domainSubagentTools(service),
+      },
+      log,
+      reconcile,
+    );
+    domainSubAgentIds.push(sub.anthropicId);
+  }
+
+  // 4. Orchestrator agent (coordinator: builder + sub-agents de domínio; MCP:
+  //    sma; built-in skills).
   // SMA_BASE_URL fornece o host do MCP server `sma` (skeleton em SMA-10).
   // Anthropic rejeita URLs com hostname loopback (localhost/127.0.0.1) —
   // a runtime deles não acessa a máquina local. Em dev a gente registra o
@@ -447,9 +524,13 @@ async function main(): Promise<void> {
       role: "orchestrator",
       model: ORCHESTRATOR_MODEL,
       system: ORCHESTRATOR_SYSTEM_PROMPT,
+      // Explicitamente `[]` (não undefined) quando sem sma: em --reconcile isso
+      // garante que MCP servers Google legados (deixados pelo SMA-18, antes do
+      // split) sejam removidos do orchestrator — eles agora vivem nos
+      // sub-agents de domínio.
       mcpServers: smaMcpUrl
         ? [{ name: "sma", type: "url", url: smaMcpUrl }]
-        : undefined,
+        : [],
       // agent_toolset (read/write/etc. que as built-in skills exigem) + o
       // mcp_toolset do `sma` quando exposto publicamente.
       tools: [
@@ -476,7 +557,7 @@ async function main(): Promise<void> {
       })),
       multiagent: {
         type: "coordinator",
-        agents: [builder.anthropicId],
+        agents: [builder.anthropicId, ...domainSubAgentIds],
       },
     },
     log,
