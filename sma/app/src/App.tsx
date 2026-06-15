@@ -13,6 +13,7 @@ import ConnectionsPage from "./pages/ConnectionsPage";
 import VaultPage from "./pages/VaultPage";
 import MemoryPage from "./pages/MemoryPage";
 import SkillsPage from "./pages/SkillsPage";
+import JobsPage from "./pages/JobsPage";
 
 export default function App() {
   return (
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/w/:slug/connections" element={<ConnectionsPage />} />
             <Route path="/w/:slug/memory" element={<MemoryPage />} />
             <Route path="/w/:slug/skills" element={<SkillsPage />} />
+            <Route path="/w/:slug/jobs" element={<JobsPage />} />
             <Route path="/w/:slug/vault" element={<VaultPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>

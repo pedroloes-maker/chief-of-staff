@@ -52,6 +52,15 @@ import {
   listSkillVersions,
   listWorkspaceSkills,
 } from "./routes/skills";
+import {
+  archiveDeployment,
+  createDeployment,
+  listDeploymentRuns,
+  listDeployments,
+  pauseDeployment,
+  runDeployment,
+  unpauseDeployment,
+} from "./routes/deployments";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -343,6 +352,63 @@ async function handle(req: Request): Promise<Response> {
     );
     if (wsSkills && req.method === "GET") {
       return Response.json(await listWorkspaceSkills(wsSkills[1]));
+    }
+
+    // --- Agendamento (Scheduled Deployments) — workspace-scoped (SMA-33) ---
+
+    // GET …/deployments/:id/runs  (histórico de disparos, live)
+    const deployRuns = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/deployments\/([^/]+)\/runs$/,
+    );
+    if (deployRuns && req.method === "GET") {
+      return Response.json(
+        await listDeploymentRuns(deployRuns[1], deployRuns[2]),
+      );
+    }
+
+    // POST …/deployments/:id/(pause|unpause|run|archive)  (ciclo de vida)
+    const deployAction = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/deployments\/([^/]+)\/(pause|unpause|run|archive)$/,
+    );
+    if (deployAction && req.method === "POST") {
+      const [, slug, id, action] = deployAction;
+      switch (action) {
+        case "pause":
+          return Response.json(await pauseDeployment(slug, id));
+        case "unpause":
+          return Response.json(await unpauseDeployment(slug, id));
+        case "run":
+          return Response.json(await runDeployment(slug, id));
+        case "archive":
+          return Response.json(await archiveDeployment(slug, id));
+      }
+    }
+
+    // GET/POST …/deployments  (lista live / cria)
+    const wsDeployments = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/deployments$/,
+    );
+    if (wsDeployments && req.method === "GET") {
+      return Response.json(await listDeployments(wsDeployments[1]));
+    }
+    if (wsDeployments && req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as {
+        agentId?: string;
+        name?: string;
+        cronExpression?: string;
+        timezone?: string;
+        kickoff?: string;
+        description?: string | null;
+      };
+      const created = await createDeployment(wsDeployments[1], {
+        agentId: body.agentId ?? "",
+        name: body.name ?? "",
+        cronExpression: body.cronExpression ?? "",
+        timezone: body.timezone ?? "",
+        kickoff: body.kickoff ?? "",
+        description: body.description ?? null,
+      });
+      return Response.json(created, { status: 201 });
     }
 
     // POST /api/workspaces/by-slug/:slug/agents/sync  (reconcilia com Anthropic)

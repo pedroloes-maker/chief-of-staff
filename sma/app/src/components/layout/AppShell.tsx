@@ -8,6 +8,7 @@ import {
   Lock,
   Settings,
   Briefcase,
+  CalendarClock,
 } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
@@ -35,6 +36,7 @@ const scopedItems: NavItem[] = [
   { label: "Agentes", icon: Brain, path: "/agents", enabled: true },
   { label: "Memória", icon: Database, path: "/memory", enabled: true },
   { label: "Skills", icon: Wrench, path: "/skills", enabled: true },
+  { label: "Agendamento", icon: CalendarClock, path: "/jobs", enabled: true },
   { label: "Conexões", icon: Plug, path: "/connections", enabled: true },
   { label: "Cofre", icon: Lock, path: "/vault", enabled: true },
   { label: "Configurações", icon: Settings, path: "/settings", enabled: false },
