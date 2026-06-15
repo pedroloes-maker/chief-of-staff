@@ -153,6 +153,29 @@ export type MemoryVersionContentView = MemoryVersionView & {
   content: string | null;
 };
 
+export type SkillUsage = {
+  agentId: string;
+  agentSlug: string;
+  agentRole: AgentRole;
+  version: string;
+};
+
+export type SkillView = {
+  source: "custom" | "anthropic";
+  skillId: string;
+  slug: string;
+  title: string | null;
+  latestVersion: string | null;
+  usedBy: SkillUsage[];
+};
+
+export type SkillVersionView = {
+  version: string;
+  name: string;
+  description: string;
+  createdAt: string;
+};
+
 export type PersistedEvent = { seq: number; type: string; payload: unknown };
 
 /** Um evento SSE do stream de mensagem: `event:` + `data:` (JSON). */
@@ -339,6 +362,29 @@ export function useApi() {
           `/api/workspaces/by-slug/${slug}/memory-stores/${storeId}/versions/${versionId}/redact`,
           { method: "POST" },
         ),
+      listSkills: (slug: string) =>
+        request<SkillView[]>(`/api/workspaces/by-slug/${slug}/skills`),
+      listSkillVersions: (slug: string, skillId: string) =>
+        request<SkillVersionView[]>(
+          `/api/workspaces/by-slug/${slug}/skills/${skillId}/versions`,
+        ),
+      createSkillVersion: (slug: string, skillId: string, skillMarkdown: string) =>
+        request<{ latestVersion: string | null; version: SkillVersionView }>(
+          `/api/workspaces/by-slug/${slug}/skills/${skillId}/versions`,
+          { method: "POST", body: JSON.stringify({ skillMarkdown }) },
+        ),
+      attachSkill: (
+        agentId: string,
+        input: { source: "custom" | "anthropic"; skillId: string; version?: string | null },
+      ) =>
+        request<{ ok: true }>(`/api/agents/${agentId}/skills`, {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      detachSkill: (agentId: string, skillId: string) =>
+        request<{ ok: true }>(`/api/agents/${agentId}/skills/${skillId}`, {
+          method: "DELETE",
+        }),
     }),
     [request, streamMessage],
   );

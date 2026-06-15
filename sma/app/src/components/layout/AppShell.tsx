@@ -34,7 +34,7 @@ const scopedItems: NavItem[] = [
   { label: "Chat", icon: MessagesSquare, path: "/chat", enabled: true },
   { label: "Agentes", icon: Brain, path: "/agents", enabled: true },
   { label: "Memória", icon: Database, path: "/memory", enabled: true },
-  { label: "Skills", icon: Wrench, path: "/skills", enabled: false },
+  { label: "Skills", icon: Wrench, path: "/skills", enabled: true },
   { label: "Conexões", icon: Plug, path: "/connections", enabled: true },
   { label: "Cofre", icon: Lock, path: "/vault", enabled: true },
   { label: "Configurações", icon: Settings, path: "/settings", enabled: false },
