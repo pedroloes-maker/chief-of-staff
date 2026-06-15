@@ -45,6 +45,13 @@ import {
   listWorkspaceMemoryStores,
   redactMemoryVersion,
 } from "./routes/memory";
+import {
+  attachSkillToAgent,
+  createSkillVersion,
+  detachSkillFromAgent,
+  listSkillVersions,
+  listWorkspaceSkills,
+} from "./routes/skills";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -306,6 +313,38 @@ async function handle(req: Request): Promise<Response> {
       return Response.json(await listStoreMemories(memList[1], memList[2]));
     }
 
+    // --- Skills (custom + prebuilt) — workspace-scoped (SMA-32) ---
+
+    // GET/POST …/skills/:skillId/versions  (histórico live / nova versão custom)
+    const skillVersions = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/skills\/([^/]+)\/versions$/,
+    );
+    if (skillVersions && req.method === "GET") {
+      return Response.json(
+        await listSkillVersions(skillVersions[1], skillVersions[2]),
+      );
+    }
+    if (skillVersions && req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as {
+        skillMarkdown?: string;
+      };
+      return Response.json(
+        await createSkillVersion(
+          skillVersions[1],
+          skillVersions[2],
+          body.skillMarkdown ?? "",
+        ),
+      );
+    }
+
+    // GET …/skills  (lista custom mirror + prebuilt + uso por agente)
+    const wsSkills = url.pathname.match(
+      /^\/api\/workspaces\/by-slug\/([^/]+)\/skills$/,
+    );
+    if (wsSkills && req.method === "GET") {
+      return Response.json(await listWorkspaceSkills(wsSkills[1]));
+    }
+
     // POST /api/workspaces/by-slug/:slug/agents/sync  (reconcilia com Anthropic)
     const agentsSync = url.pathname.match(
       /^\/api\/workspaces\/by-slug\/([^/]+)\/agents\/sync$/,
@@ -339,6 +378,35 @@ async function handle(req: Request): Promise<Response> {
     const agentArchive = url.pathname.match(/^\/api\/agents\/([^/]+)\/archive$/);
     if (agentArchive && req.method === "POST") {
       return Response.json(await archiveAgent(agentArchive[1]));
+    }
+
+    // DELETE /api/agents/:id/skills/:skillId  (desanexa skill do agente)
+    const agentSkillDetach = url.pathname.match(
+      /^\/api\/agents\/([^/]+)\/skills\/([^/]+)$/,
+    );
+    if (agentSkillDetach && req.method === "DELETE") {
+      return Response.json(
+        await detachSkillFromAgent(agentSkillDetach[1], agentSkillDetach[2]),
+      );
+    }
+
+    // POST /api/agents/:id/skills  (anexa skill ao agente)
+    const agentSkillAttach = url.pathname.match(
+      /^\/api\/agents\/([^/]+)\/skills$/,
+    );
+    if (agentSkillAttach && req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as {
+        source?: "custom" | "anthropic";
+        skillId?: string;
+        version?: string | null;
+      };
+      return Response.json(
+        await attachSkillToAgent(agentSkillAttach[1], {
+          source: body.source ?? "custom",
+          skillId: body.skillId ?? "",
+          version: body.version ?? null,
+        }),
+      );
     }
 
     // GET/POST /api/agents/:id  (detalhe ao vivo / edição Anthropic-first)
