@@ -1,13 +1,12 @@
 import { Show } from "@clerk/react";
-import { Routes, Route } from "react-router-dom";
+import { Navigate, Routes, Route } from "react-router-dom";
 import AppShell from "./components/layout/AppShell";
 import LoginPage from "./pages/LoginPage";
-import HomePage from "./pages/HomePage";
 import NotFoundPage from "./pages/NotFoundPage";
+import { useWorkspaces } from "./lib/api";
 import WorkspaceDashboardPage from "./pages/WorkspaceDashboardPage";
 import WorkspacesAdminPage from "./pages/WorkspacesAdminPage";
 import ChatPage from "./pages/ChatPage";
-import SessionsPage from "./pages/SessionsPage";
 import AgentsPage from "./pages/AgentsPage";
 import AgentDetailPage from "./pages/AgentDetailPage";
 import ConnectionsPage from "./pages/ConnectionsPage";
@@ -23,11 +22,10 @@ export default function App() {
       <Show when="signed-in">
         <AppShell>
           <Routes>
-            <Route path="/" element={<HomePage />} />
+            <Route path="/" element={<HomeRedirect />} />
             <Route path="/admin/workspaces" element={<WorkspacesAdminPage />} />
             <Route path="/w/:slug" element={<WorkspaceDashboardPage />} />
             <Route path="/w/:slug/chat" element={<ChatPage />} />
-            <Route path="/w/:slug/sessions" element={<SessionsPage />} />
             <Route path="/w/:slug/agents" element={<AgentsPage />} />
             <Route path="/w/:slug/agents/:id" element={<AgentDetailPage />} />
             <Route path="/w/:slug/connections" element={<ConnectionsPage />} />
@@ -38,5 +36,16 @@ export default function App() {
         </AppShell>
       </Show>
     </>
+  );
+}
+
+// Sem página Início: a raiz manda pro primeiro workspace disponível (o default
+// ativo). Sem workspaces ainda, vai pra tela de gerenciamento pra conectar um.
+function HomeRedirect() {
+  const { data, loading } = useWorkspaces();
+  if (loading || !data) return null;
+  const first = data[0];
+  return (
+    <Navigate to={first ? `/w/${first.slug}` : "/admin/workspaces"} replace />
   );
 }

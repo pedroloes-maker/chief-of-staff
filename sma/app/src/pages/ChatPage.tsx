@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowUp,
+  ChevronDown,
   ChevronRight,
   CornerDownRight,
   CornerUpLeft,
@@ -95,6 +96,9 @@ export default function ChatPage() {
   const [showInternals, setShowInternals] = useState(false);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  // Agente fixado quando a sessão começa (orchestrator por padrão). Trava o
+  // seletor; o agente "atual" exibido pode mudar via transferências.
+  const [boundAgentId, setBoundAgentId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionView[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -142,6 +146,7 @@ export default function ChatPage() {
     void api
       .getSession(resume)
       .then((s) => {
+        setBoundAgentId(s.agentId);
         setCost({
           usd: s.usdEstimate,
           inputTokens: s.inputTokens,
@@ -312,6 +317,7 @@ export default function ChatPage() {
         });
         id = created.id;
         setSessionId(id);
+        setBoundAgentId(created.agentId ?? selectedAgentId ?? null);
         refetchSessions();
       }
       await api.streamMessage(id, text, applyEvent, controller.signal);
@@ -378,11 +384,13 @@ export default function ChatPage() {
   }, [api]);
 
   // Nova sessão: sempre interrompe o turno em andamento (se houver), limpa o
-  // ?session e reseta o estado (o AgentPicker reaparece).
+  // ?session e reseta o estado (o seletor de agente reaparece, default = orch).
   const newSession = useCallback(() => {
     if (streaming) void stop();
     setSearchParams({});
     setSessionId(null);
+    setBoundAgentId(null);
+    setSelectedAgentId(null);
     setItems([]);
     setCost(null);
     setInput("");
@@ -402,22 +410,48 @@ export default function ChatPage() {
     [newSession, setSearchParams, streaming, stop],
   );
 
+  // O agente só pode ser escolhido antes da sessão começar; depois vira tag.
+  const activeAgents = agents.filter((a) => a.status === "active");
+  const agentLocked = sessionId != null || items.length > 0;
+  const baseAgent =
+    resolveAgentById(agents, boundAgentId) ??
+    agents.find((a) => a.role === "orchestrator");
+  const currentAgentLabel = deriveCurrentAgentLabel(items, agents, baseAgent);
+  // Controle de agente vive no composer (ao lado do anexo): select antes da
+  // sessão começar, tag travada depois. Orchestrator transfere e a tag segue;
+  // sub-agente fica fixo nele.
+  const agentControl = agentLocked ? (
+    <AgentTag label={currentAgentLabel} />
+  ) : activeAgents.length > 0 ? (
+    <AgentSelect
+      agents={activeAgents}
+      value={selectedAgentId}
+      onChange={setSelectedAgentId}
+    />
+  ) : null;
+
   return (
     <div className="flex h-full flex-col">
-      <header className="glass z-10 flex h-16 shrink-0 items-center justify-between border-b border-line px-8">
+      <header className="glass z-10 flex h-16 shrink-0 items-center justify-between px-8">
         <div className="flex min-w-0 items-center gap-2">
-          <select
-            value={sessionId ?? "new"}
-            onChange={(e) => selectSession(e.target.value)}
-            className="max-w-[55vw] truncate rounded-full border border-line bg-surface px-3.5 py-1.5 text-[13px] font-medium text-fg shadow-card outline-none transition focus:border-line-strong"
-          >
-            <option value="new">Nova sessão</option>
-            {sessions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {sessionOption(s)}
-              </option>
-            ))}
-          </select>
+          <div className="relative min-w-0 max-w-[55vw]">
+            <select
+              value={sessionId ?? "new"}
+              onChange={(e) => selectSession(e.target.value)}
+              className="w-full cursor-pointer truncate appearance-none rounded-full border border-line bg-surface py-1.5 pl-3.5 pr-10 text-[13px] font-medium text-fg shadow-card outline-none transition focus:border-line-strong"
+            >
+              <option value="new">Nova sessão</option>
+              {sessions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {sessionLabel(s)}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+              strokeWidth={1.5}
+            />
+          </div>
           <button
             type="button"
             onClick={newSession}
@@ -476,22 +510,48 @@ export default function ChatPage() {
         onSend={() => void send()}
         onStop={() => void stop()}
         streaming={streaming}
-        picker={
-          !sessionId && agents.some((a) => a.status === "active") ? (
-            <AgentPicker
-              agents={agents.filter((a) => a.status === "active")}
-              value={selectedAgentId}
-              onChange={setSelectedAgentId}
-            />
-          ) : null
-        }
+        agentControl={agentControl}
       />
     </div>
   );
 }
 
-/** Seletor "Falando com:" — só em sessão nova (a sessão fixa o agente). */
-function AgentPicker({
+function agentLabel(a: AgentSummary): string {
+  return a.slug;
+}
+
+function resolveAgentById(
+  agents: AgentSummary[],
+  id: string | null,
+): AgentSummary | undefined {
+  return id ? agents.find((a) => a.id === id) : undefined;
+}
+
+// Agente "atual" da sessão: começa no agente fixado (orchestrator por padrão) e
+// acompanha as transferências — ao delegar (sent) vai pro sub-agente, ao receber
+// de volta (received) retorna pro agente base.
+function deriveCurrentAgentLabel(
+  items: ChatItem[],
+  agents: AgentSummary[],
+  base: AgentSummary | undefined,
+): string {
+  const baseLabel = base ? agentLabel(base) : ROLE_LABEL.orchestrator;
+  let label = baseLabel;
+  for (const it of items) {
+    if (it.kind !== "transfer") continue;
+    if (it.direction === "sent" && it.agent) {
+      const resolved = agents.find((a) => a.slug === it.agent);
+      label = resolved ? agentLabel(resolved) : it.agent;
+    } else if (it.direction === "received") {
+      label = baseLabel;
+    }
+  }
+  return label;
+}
+
+/** Seletor de agente no composer — só antes da sessão começar (a sessão fixa o
+ *  agente). Mostra só o nome do agente; default = orchestrator. */
+function AgentSelect({
   agents,
   value,
   onChange,
@@ -501,35 +561,42 @@ function AgentPicker({
   onChange: (id: string) => void;
 }) {
   return (
-    <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 text-[11px] text-fg-muted">
-      <span>Falando com:</span>
+    <div className="relative shrink-0">
       <select
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-full border border-line bg-surface px-3 py-1 font-mono text-[11px] text-fg shadow-card outline-none transition focus:border-line-strong"
+        className="cursor-pointer appearance-none rounded-full border border-line bg-elev py-1 pl-3 pr-8 text-xs font-medium text-fg outline-none transition hover:bg-elev-hover focus:border-line-strong"
       >
         {agents.map((a) => (
           <option key={a.id} value={a.id}>
-            {a.slug} · {ROLE_LABEL[a.role]}
+            {agentLabel(a)}
           </option>
         ))}
       </select>
+      <ChevronDown
+        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-muted"
+        strokeWidth={1.5}
+      />
     </div>
+  );
+}
+
+/** Tag travada do agente atual — depois que a sessão começa não dá pra trocar.
+ *  Reflete quem está em foco: muda quando o orchestrator delega/recebe. */
+function AgentTag({ label }: { label: string }) {
+  return (
+    <span
+      title={`Falando com ${label}`}
+      className="block max-w-[32vw] shrink-0 truncate rounded-full border border-line bg-elev px-3 py-1 text-xs font-medium text-fg-muted"
+    >
+      {label}
+    </span>
   );
 }
 
 /** Título da sessão: usa o title, senão um id curto. */
 function sessionLabel(s: SessionView): string {
   return s.title?.trim() || `Sessão ${s.id.slice(0, 8)}`;
-}
-
-/** Rótulo da opção no dropdown: título + data de criação. */
-function sessionOption(s: SessionView): string {
-  const date = new Date(s.createdAt).toLocaleString("pt-BR", {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
-  return `${sessionLabel(s)} · ${date}`;
 }
 
 /** Custo USD sempre visível no topo; tokens só quando há uso. */
@@ -822,37 +889,34 @@ function Composer({
   onSend,
   onStop,
   streaming,
-  picker,
+  agentControl,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSend: () => void;
   onStop: () => void;
   streaming: boolean;
-  picker?: React.ReactNode;
+  agentControl?: React.ReactNode;
 }) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow: a caixa cresce conforme as quebras de linha, até o max-h (daí
+  // rola internamente). Recolhe de volta quando o texto é limpo (pós-envio).
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+
+  const hasText = value.trim().length > 0;
+
   return (
-    <div className="glass shrink-0 border-t border-line px-6 py-4">
-      {picker}
-      <div className="mx-auto flex max-w-3xl items-end gap-2">
-        <button
-          type="button"
-          disabled
-          title="Anexar arquivo — em breve"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-line text-fg-faint"
-        >
-          <Paperclip className="h-4 w-4" strokeWidth={1.5} />
-        </button>
-        <button
-          type="button"
-          disabled
-          title="Gravar áudio — em breve"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-line text-fg-faint"
-        >
-          <Mic className="h-4 w-4" strokeWidth={1.5} />
-        </button>
-        <div className="flex flex-1 items-end gap-2 rounded-2xl border border-line bg-surface px-3 py-1.5 shadow-card focus-within:border-black/[0.25]">
+    <div className="shrink-0 px-6 py-4">
+      <div className="mx-auto max-w-3xl">
+        <div className="flex flex-col gap-1.5 rounded-2xl border border-line bg-surface px-3 py-2 shadow-card focus-within:border-black/[0.25]">
           <textarea
+            ref={textareaRef}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={(e) => {
@@ -863,28 +927,54 @@ function Composer({
             }}
             rows={1}
             placeholder="Mande uma mensagem… (Enter envia, Shift+Enter quebra linha)"
-            className="max-h-40 flex-1 resize-none bg-transparent py-1.5 text-sm leading-relaxed text-fg placeholder:text-fg-faint focus:outline-none"
+            className="max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1.5 pt-1 text-sm leading-relaxed text-fg placeholder:text-fg-faint focus:outline-none"
           />
-          {streaming ? (
-            <button
-              type="button"
-              onClick={onStop}
-              title="Interromper o agente"
-              aria-label="Interromper o agente"
-              className="mb-0.5 flex h-8 w-8 shrink-0 animate-pulse items-center justify-center rounded-full bg-red-600 text-white shadow-card transition duration-150 hover:bg-red-700 active:scale-95"
-            >
-              <span className="h-2.5 w-2.5 rounded-[2px] bg-white" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onSend}
-              disabled={!value.trim()}
-              className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-bg text-accent-fg transition duration-150 hover:bg-black active:scale-95 disabled:cursor-not-allowed disabled:opacity-30"
-            >
-              <ArrowUp className="h-4 w-4" strokeWidth={2} />
-            </button>
-          )}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <button
+                type="button"
+                disabled
+                title="Anexar arquivo — em breve"
+                aria-label="Anexar arquivo"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-fg-faint transition disabled:cursor-not-allowed"
+              >
+                <Paperclip className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+              {agentControl}
+            </div>
+
+            {streaming ? (
+              <button
+                type="button"
+                onClick={onStop}
+                title="Interromper o agente"
+                aria-label="Interromper o agente"
+                className="flex h-8 w-8 shrink-0 animate-pulse items-center justify-center rounded-full bg-red-600 text-white shadow-card transition duration-150 hover:bg-red-700 active:scale-95"
+              >
+                <span className="h-2.5 w-2.5 rounded-[2px] bg-white" />
+              </button>
+            ) : hasText ? (
+              <button
+                type="button"
+                onClick={onSend}
+                title="Enviar mensagem"
+                aria-label="Enviar mensagem"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-bg text-accent-fg transition duration-150 hover:bg-black active:scale-95"
+              >
+                <ArrowUp className="h-4 w-4" strokeWidth={2} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled
+                title="Gravar áudio — em breve"
+                aria-label="Gravar áudio"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-fg-faint transition disabled:cursor-not-allowed"
+              >
+                <Mic className="h-4 w-4" strokeWidth={1.5} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
