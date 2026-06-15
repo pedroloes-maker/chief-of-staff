@@ -176,6 +176,48 @@ export type SkillVersionView = {
   createdAt: string;
 };
 
+export type DeploymentScheduleView = {
+  expression: string;
+  timezone: string;
+  lastRunAt: string | null;
+  upcomingRunsAt: string[];
+} | null;
+
+export type DeploymentView = {
+  id: string;
+  name: string;
+  description: string | null;
+  status: "active" | "paused" | "archived";
+  pausedReason: string | null;
+  agentId: string;
+  agentSlug: string | null;
+  agentRole: AgentRole | null;
+  agentVersion: number;
+  kickoff: string | null;
+  schedule: DeploymentScheduleView;
+  createdAt: string;
+};
+
+export type DeploymentRunView = {
+  id: string;
+  status: "success" | "error";
+  sessionId: string | null;
+  errorType: string | null;
+  errorMessage: string | null;
+  trigger: "schedule" | "manual";
+  scheduledAt: string | null;
+  createdAt: string;
+};
+
+export type CreateDeploymentInput = {
+  agentId: string;
+  name: string;
+  cronExpression: string;
+  timezone: string;
+  kickoff: string;
+  description?: string | null;
+};
+
 export type PersistedEvent = { seq: number; type: string; payload: unknown };
 
 /** Um evento SSE do stream de mensagem: `event:` + `data:` (JSON). */
@@ -385,6 +427,37 @@ export function useApi() {
         request<{ ok: true }>(`/api/agents/${agentId}/skills/${skillId}`, {
           method: "DELETE",
         }),
+      listDeployments: (slug: string) =>
+        request<DeploymentView[]>(`/api/workspaces/by-slug/${slug}/deployments`),
+      listDeploymentRuns: (slug: string, id: string) =>
+        request<DeploymentRunView[]>(
+          `/api/workspaces/by-slug/${slug}/deployments/${id}/runs`,
+        ),
+      createDeployment: (slug: string, input: CreateDeploymentInput) =>
+        request<DeploymentView>(`/api/workspaces/by-slug/${slug}/deployments`, {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+      pauseDeployment: (slug: string, id: string) =>
+        request<DeploymentView>(
+          `/api/workspaces/by-slug/${slug}/deployments/${id}/pause`,
+          { method: "POST" },
+        ),
+      unpauseDeployment: (slug: string, id: string) =>
+        request<DeploymentView>(
+          `/api/workspaces/by-slug/${slug}/deployments/${id}/unpause`,
+          { method: "POST" },
+        ),
+      runDeployment: (slug: string, id: string) =>
+        request<DeploymentRunView>(
+          `/api/workspaces/by-slug/${slug}/deployments/${id}/run`,
+          { method: "POST" },
+        ),
+      archiveDeployment: (slug: string, id: string) =>
+        request<DeploymentView>(
+          `/api/workspaces/by-slug/${slug}/deployments/${id}/archive`,
+          { method: "POST" },
+        ),
     }),
     [request, streamMessage],
   );
